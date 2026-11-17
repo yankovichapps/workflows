@@ -5,7 +5,7 @@
  * Xcode Cloud's build counter on iOS, so nothing is stored in the repository.
  *
  * Considers every uploaded bundle and APK, and every release on any track.
- * Opens a temporary edit to read them and deletes it afterwards.
+ * Reads them in a temporary edit that is deleted afterwards.
  *
  * Usage (PLAY_ACCESS_TOKEN with the androidpublisher scope):
  *   node play-version-code.mjs --package com.example.app
@@ -15,7 +15,7 @@ import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const API = 'https://androidpublisher.googleapis.com/androidpublisher/v3/applications';
+import { withEdit } from './play-api.mjs';
 
 /** Highest version code among bundles, APKs and track releases; 0 when none. */
 export const highestVersionCode = ({ bundles = [], apks = [], tracks = [] }) => {
@@ -30,19 +30,6 @@ export const highestVersionCode = ({ bundles = [], apks = [], tracks = [] }) => 
   return codes.length > 0 ? Math.max(...codes) : 0;
 };
 
-const request = async (method, url, token) => {
-  const response = await fetch(url, {
-    method,
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!response.ok) {
-    throw new Error(`${method} ${url}: ${response.status} ${await response.text()}`);
-  }
-
-  return response.status === 204 ? {} : response.json().catch(() => ({}));
-};
-
 const main = async () => {
   const { values } = parseArgs({ options: { package: { type: 'string' } } });
   const token = process.env.PLAY_ACCESS_TOKEN;
@@ -51,26 +38,20 @@ const main = async () => {
     throw new Error('Needs --package and PLAY_ACCESS_TOKEN');
   }
 
-  const appUrl = `${API}/${encodeURIComponent(values.package)}`;
-  const { id: editId } = await request('POST', `${appUrl}/edits`, token);
-  const editUrl = `${appUrl}/edits/${editId}`;
-
-  try {
+  const highest = await withEdit(values.package, token, async (edit) => {
     const [bundles, apks, tracks] = await Promise.all([
-      request('GET', `${editUrl}/bundles`, token),
-      request('GET', `${editUrl}/apks`, token),
-      request('GET', `${editUrl}/tracks`, token),
+      edit.get('bundles'),
+      edit.get('apks'),
+      edit.get('tracks'),
     ]);
-    const highest = highestVersionCode({
+    return highestVersionCode({
       bundles: bundles.bundles,
       apks: apks.apks,
       tracks: tracks.tracks,
     });
+  });
 
-    process.stdout.write(`version-code=${highest + 1}\nhighest=${highest}\n`);
-  } finally {
-    await request('DELETE', editUrl, token);
-  }
+  process.stdout.write(`version-code=${highest + 1}\nhighest=${highest}\n`);
 };
 
 const isEntryPoint =
