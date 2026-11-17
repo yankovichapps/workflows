@@ -1,41 +1,15 @@
 {
-  "//": "Merge these targets into apps/<expo-app>/project.json. They regenerate the committed native folders and fail when the result differs from what is committed. Run android on Linux, ios on macOS (CocoaPods): see ci-prebuild-check.yml.",
+  "//": "Merge this target into apps/<expo-app>/project.json. It re-applies app.json and the config plugins to the committed native folders and fails when that changes anything, i.e. when someone changed the Expo config without running prebuild. No --clean (and no pod install), so it runs on Linux; leftovers of removed plugins and manual native edits are left to code review.",
   "targets": {
-    "prebuild-check-android": {
+    "prebuild-check": {
       "executor": "nx:run-commands",
       "cache": false,
-      "inputs": [
-        "{projectRoot}/app.json",
-        "{projectRoot}/app.config.*",
-        "{projectRoot}/plugins/**/*",
-        "{projectRoot}/package.json",
-        "{projectRoot}/android/**/*"
-      ],
+      "inputs": ["{projectRoot}/app.json", "{projectRoot}/app.config.*", "{projectRoot}/plugins/**/*", "{projectRoot}/package.json", "{projectRoot}/ios/**/*", "{projectRoot}/android/**/*"],
       "options": {
         "cwd": "{projectRoot}",
         "commands": [
-          "npx expo prebuild --clean --no-install --platform android",
-          "test -z \"$(git status --porcelain -- android)\" || { git status --short -- android; echo 'android/ is out of date: run \"npx expo prebuild --clean --platform android\" and commit the result' >&2; exit 1; }"
-        ],
-        "parallel": false
-      }
-    },
-    "prebuild-check-ios": {
-      "executor": "nx:run-commands",
-      "cache": false,
-      "inputs": [
-        "{projectRoot}/app.json",
-        "{projectRoot}/app.config.*",
-        "{projectRoot}/plugins/**/*",
-        "{projectRoot}/package.json",
-        "{projectRoot}/ios/**/*"
-      ],
-      "options": {
-        "cwd": "{projectRoot}",
-        "commands": [
-          "npx expo prebuild --clean --no-install --platform ios",
-          "cd ios && bundle exec pod install",
-          "test -z \"$(git status --porcelain -- ios)\" || { git status --short -- ios; echo 'ios/ is out of date: run \"npx expo prebuild --clean --platform ios\" and \"pod install\", then commit the result' >&2; exit 1; }"
+          "npx expo prebuild --no-install",
+          "test -z \"$(git status --porcelain -- ios android)\" || { git status --short -- ios android; echo 'ios/ or android/ is out of date: run \"npx expo prebuild\" and commit the result' >&2; exit 1; }"
         ],
         "parallel": false
       }

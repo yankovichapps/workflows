@@ -37,11 +37,11 @@ repository. It contains no secrets and no project-specific values.
 ### Expo apps
 
 Expo apps commit `ios/` and `android/` and are released like any React Native app. Add the
-`prebuild-check-android` / `prebuild-check-ios` targets from
+`prebuild-check` target from
 [`templates/expo/prebuild-check.project.json`](templates/expo/prebuild-check.project.json) and
-the CI jobs from [`templates/expo/ci-prebuild-check.yml`](templates/expo/ci-prebuild-check.yml):
-they regenerate the native folders and fail when the result differs from what is committed.
-iOS runs on macOS because the committed project includes the `pod install` result.
+the CI job from [`templates/expo/ci-prebuild-check.yml`](templates/expo/ci-prebuild-check.yml):
+it re-applies the Expo config with `expo prebuild --no-install` (no `--clean`, so no
+`pod install` and no macOS runner) and fails when the committed native folders change.
 
 ## Development
 
