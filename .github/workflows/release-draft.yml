@@ -1,0 +1,97 @@
+# Creates or updates one draft GitHub Release per app, named and tagged
+# `<app>@<next version>`, from the conventional commits since the app's last
+# tag. Publishing a draft (by a person) creates the tag and starts the release.
+#
+# Call it after CI succeeded on the default branch, see templates/release.yml.
+name: Release draft
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: 'Commit to draft from. Default: the commit CI ran on (workflow_run), else github.sha'
+        type: string
+        required: false
+        default: ''
+      app-tag:
+        description: 'Nx tag that marks the apps released through this flow'
+        type: string
+        required: false
+        default: 'release'
+      node-version:
+        description: 'Node.js version used to run Nx'
+        type: string
+        required: false
+        default: '24'
+
+jobs:
+  draft:
+    name: Draft releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create, update and delete draft releases
+    concurrency:
+      group: release-draft-${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - name: Resolve commit
+        id: commit
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_SHA: ${{ github.sha }}
+        run: echo "sha=${INPUT_SHA:-${WORKFLOW_RUN_SHA:-${EVENT_SHA}}}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      # This reusable workflow's own scripts, at exactly the commit the caller pinned
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      # Only Nx's project graph is needed: no lifecycle scripts, no native builds
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Compute next versions
+        env:
+          APP_TAG: ${{ inputs.app-tag }}
+          HEAD_SHA: ${{ steps.commit.outputs.sha }}
+          NX_DAEMON: 'false'
+        run: |
+          APPS="$(pnpm exec nx show projects --projects "tag:${APP_TAG}" --json)"
+          echo "Apps: ${APPS}"
+          pnpm exec nx graph --file="${RUNNER_TEMP}/graph.json"
+          node .release-tooling/scripts/release/next-version.mjs \
+            --apps "${APPS}" \
+            --graph "${RUNNER_TEMP}/graph.json" \
+            --head "${HEAD_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            > "${RUNNER_TEMP}/versions.json"
+          cat "${RUNNER_TEMP}/versions.json"
+
+      - name: Sync draft releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          node .release-tooling/scripts/release/sync-drafts.mjs \
+            --versions "${RUNNER_TEMP}/versions.json" \
+            --target "${HEAD_SHA}"

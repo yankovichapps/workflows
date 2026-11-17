@@ -1,0 +1,18 @@
+# Copy to <repo>/.github/workflows/release.yml and replace <sha> with the
+# commit of yankovichapps/workflows to use (Dependabot keeps it updated).
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI] # the name of the repository's CI workflow
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  draft:
+    if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: write
+    uses: yankovichapps/workflows/.github/workflows/release-draft.yml@<sha> # v1
