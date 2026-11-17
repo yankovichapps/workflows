@@ -34,6 +34,15 @@ repository. It contains no secrets and no project-specific values.
   appear in the notes under "Other changes" but do not cause a release.
 - Without a release-worthy commit there is no draft, and a stale draft of the app is deleted.
 
+### Expo apps
+
+Expo apps commit `ios/` and `android/` and are released like any React Native app. Add the
+`prebuild-check-android` / `prebuild-check-ios` targets from
+[`templates/expo/prebuild-check.project.json`](templates/expo/prebuild-check.project.json) and
+the CI jobs from [`templates/expo/ci-prebuild-check.yml`](templates/expo/ci-prebuild-check.yml):
+they regenerate the native folders and fail when the result differs from what is committed.
+iOS runs on macOS because the committed project includes the `pod install` result.
+
 ## Development
 
 ```bash

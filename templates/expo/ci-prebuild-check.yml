@@ -1,0 +1,26 @@
+# Jobs to add to the code repository's CI workflow (next to lint/test).
+# They run only for Expo apps whose config or native folders changed
+# (nx affected), so the macOS job is rare. Pin the actions like the rest of CI.
+  prebuild-check-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<sha> # with fetch-depth: 0 for nx affected
+      - uses: pnpm/action-setup@<sha>
+      - uses: actions/setup-node@<sha>
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - uses: nrwl/nx-set-shas@<sha>
+      - run: pnpm exec nx affected -t prebuild-check-android
+
+  prebuild-check-ios:
+    runs-on: macos-latest # CocoaPods needs macOS; billed 10x, runs only when affected
+    steps:
+      - uses: actions/checkout@<sha>
+      - uses: pnpm/action-setup@<sha>
+      - uses: actions/setup-node@<sha>
+        with: { node-version: 24, cache: pnpm }
+      - uses: ruby/setup-ruby@<sha>
+        with: { bundler-cache: true, working-directory: apps/<expo-app> }
+      - run: pnpm install --frozen-lockfile
+      - uses: nrwl/nx-set-shas@<sha>
+      - run: pnpm exec nx affected -t prebuild-check-ios

@@ -27,6 +27,10 @@ on:
 jobs:
   draft:
     name: Draft releases
+    # Defense in depth: when called from workflow_run, only for CI runs started by
+    # a push (a merge), never by a pull request, whose head branch could be a
+    # fork's "main".
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create, update and delete draft releases
