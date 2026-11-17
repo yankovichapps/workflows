@@ -13,7 +13,7 @@ repository. It contains no secrets and no project-specific values.
 | Workflow                                                          | Status  | What it does                                                                  |
 | ----------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
 | [`release-draft.yml`](.github/workflows/release-draft.yml)        | ready   | One draft release per app, `<app>@<next version>`, from conventional commits |
-| `release-android.yml`                                             | planned | Version from the tag, `versionCode` = Play's highest + 1, build and upload    |
+| [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Version from the tag, `versionCode` = Play's highest + 1, build and upload    |
 | `release-promote.yml`                                             | planned | Pre-release → release: promote the tested builds without rebuilding           |
 | `ios-submit.yml`                                                  | planned | After the Xcode Cloud upload: TestFlight only, or submit for review           |
 | `store-metadata.yml`                                              | planned | Texts and screenshots to the App Store and Google Play                        |
@@ -25,6 +25,33 @@ repository. It contains no secrets and no project-specific values.
    `git tag keep-an-eye@3.8.0 <sha> && git push origin keep-an-eye@3.8.0`.
 3. Copy [`templates/release.yml`](templates/release.yml) to `.github/workflows/release.yml`
    and pin `<sha>` to a commit of this repository. Dependabot keeps the pin updated.
+
+### What an app provides for `release-android`
+
+| Item                         | Convention                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `ANDROID_PACKAGE`, `SECRET_ANDROID_UPLOAD_KEYSTORE` (managed by `<repo>-infra`); repository variable `GCP_WORKLOAD_IDENTITY_PROVIDER` |
+| Keystore secret              | JSON `{"keystore":"<base64>","storePassword","keyAlias","keyPassword"}` in Secret Manager           |
+| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it |
+| Gradle (`android/app/build.gradle`) | `versionCode`/`versionName` from the project properties of the same name (placeholders `1` / `0.0.0`); release signing from `ANDROID_UPLOAD_STORE_FILE`, `ANDROID_UPLOAD_STORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS`, `ANDROID_UPLOAD_KEY_PASSWORD` |
+| Nx target `release-prepare`  | optional: generates gitignored sources the build needs; called with `--platform=android`           |
+
+```gradle
+defaultConfig {
+    versionCode((findProperty("versionCode") ?: 1) as Integer)
+    versionName(findProperty("versionName") ?: "0.0.0")
+}
+signingConfigs {
+    release {
+        if (project.hasProperty("ANDROID_UPLOAD_STORE_FILE")) {
+            storeFile file(ANDROID_UPLOAD_STORE_FILE)
+            storePassword ANDROID_UPLOAD_STORE_PASSWORD
+            keyAlias ANDROID_UPLOAD_KEY_ALIAS
+            keyPassword ANDROID_UPLOAD_KEY_PASSWORD
+        }
+    }
+}
+```
 
 ### How the next version is computed
 

@@ -1,0 +1,241 @@
+# Builds the Android App Bundle of the app named in a release tag
+# (`<app>@<version>`) and uploads it to a Google Play track.
+#
+# - versionName: the version from the tag
+# - versionCode: the highest version code Google Play has accepted, plus one
+# - track: `internal` for a pre-release, `production` for a release
+#
+# The calling repository provides, per app (see README):
+# - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
+#   ANDROID_PACKAGE, SECRET_ANDROID_UPLOAD_KEYSTORE, and the repository variable
+#   GCP_WORKLOAD_IDENTITY_PROVIDER
+# - fastlane lane `android upload track:<track>` in apps/<app>/android
+# - Gradle: versionCode/versionName from the `versionCode`/`versionName` project
+#   properties, release signing from the ANDROID_UPLOAD_* project properties
+# - optional Nx target `<app>:release-prepare` (generated, gitignored sources)
+name: Release Android
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag <app>@<version>. Default: the tag of the release event'
+        type: string
+        required: false
+        default: ''
+      track:
+        description: 'Google Play track. Default: internal for a pre-release, production otherwise'
+        type: string
+        required: false
+        default: ''
+      node-version:
+        type: string
+        required: false
+        default: '24'
+      java-version:
+        type: string
+        required: false
+        default: '17'
+      ruby-version:
+        description: 'Ruby for fastlane; runner images only ship the newest patch of a minor'
+        type: string
+        required: false
+        default: '3.3'
+    outputs:
+      version-code:
+        description: 'The versionCode uploaded to Google Play'
+        value: ${{ jobs.android.outputs.version-code }}
+
+jobs:
+  resolve:
+    name: Resolve release
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      app: ${{ steps.tag.outputs.app }}
+      version: ${{ steps.tag.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      track: ${{ steps.track.outputs.track }}
+    steps:
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      - name: Parse tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="${INPUT_TAG:-${EVENT_TAG}}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          node .release-tooling/scripts/release/release-tag.mjs "${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Choose track
+        id: track
+        env:
+          INPUT_TRACK: ${{ inputs.track }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          if [[ -n "${INPUT_TRACK}" ]]; then
+            TRACK="${INPUT_TRACK}"
+          elif [[ "${PRERELEASE}" == "true" ]]; then
+            TRACK=internal
+          elif [[ "${PRERELEASE}" == "false" ]]; then
+            TRACK=production
+          else
+            echo "::error::No track input and no release event to derive it from"
+            exit 1
+          fi
+          echo "track=${TRACK}" >> "${GITHUB_OUTPUT}"
+
+  android:
+    name: Android (${{ needs.resolve.outputs.tag }} → ${{ needs.resolve.outputs.track }})
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.app }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    # One release per app at a time: two builds must never pick the same versionCode
+    concurrency:
+      group: release-android-${{ github.repository }}-${{ needs.resolve.outputs.app }}
+      cancel-in-progress: false
+    outputs:
+      version-code: ${{ steps.version-code.outputs.version-code }}
+    env:
+      APP: ${{ needs.resolve.outputs.app }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TRACK: ${{ needs.resolve.outputs.track }}
+    steps:
+      - name: Check out ${{ needs.resolve.outputs.tag }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      - name: Check app layout
+        run: |
+          if [[ ! -d "apps/${APP}/android" ]]; then
+            echo "::error::apps/${APP}/android not found: the tag does not name an Android app"
+            exit 1
+          fi
+
+      # Hosted runners have ~14 GB free; a React Native release build needs more
+      # (the final native link crashes with "Bus error" when the disk fills up).
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
+        with:
+          android: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      # Native modules need their install scripts for the Gradle build
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare (release-prepare)
+        env:
+          NX_DAEMON: 'false'
+        run: |
+          if pnpm exec nx show project "${APP}" --json | jq -e '.targets["release-prepare"]' > /dev/null; then
+            pnpm exec nx run "${APP}:release-prepare" --platform=android
+          else
+            echo "${APP} has no release-prepare target, nothing to prepare"
+          fi
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: zulu
+          java-version: ${{ inputs.java-version }}
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          working-directory: apps/${{ needs.resolve.outputs.app }}
+          bundler-cache: true
+
+      # Authenticating after the install keeps the credentials away from
+      # dependency install scripts. The credentials file (external_account) is
+      # what fastlane supply uses; the access token reads the version codes.
+      - name: Authenticate to Google Cloud via WIF
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Next versionCode from Google Play
+        id: version-code
+        env:
+          PLAY_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+          ANDROID_PACKAGE: ${{ vars.ANDROID_PACKAGE }}
+        run: |
+          node .release-tooling/scripts/release/play-version-code.mjs --package "${ANDROID_PACKAGE}" | tee -a "${GITHUB_OUTPUT}"
+
+      # The keystore credentials exist only inside this step's shell. Gradle reads
+      # ORG_GRADLE_PROJECT_<name> environment variables as project properties.
+      - name: Build & upload to Google Play
+        working-directory: apps/${{ needs.resolve.outputs.app }}/android
+        env:
+          GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          KEYSTORE_SECRET_ID: ${{ vars.SECRET_ANDROID_UPLOAD_KEYSTORE }}
+          SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
+          ORG_GRADLE_PROJECT_versionName: ${{ needs.resolve.outputs.version }}
+          ORG_GRADLE_PROJECT_versionCode: ${{ steps.version-code.outputs.version-code }}
+        run: |
+          KEYSTORE_JSON="$(gcloud secrets versions access latest --secret="${KEYSTORE_SECRET_ID}" --project="${GCP_PROJECT}")"
+          STORE_PASSWORD="$(jq -er .storePassword <<< "${KEYSTORE_JSON}")"
+          KEY_ALIAS="$(jq -er .keyAlias <<< "${KEYSTORE_JSON}")"
+          KEY_PASSWORD="$(jq -er .keyPassword <<< "${KEYSTORE_JSON}")"
+          echo "::add-mask::${STORE_PASSWORD}"
+          echo "::add-mask::${KEY_PASSWORD}"
+
+          KEYSTORE_PATH="${RUNNER_TEMP}/upload.keystore"
+          jq -er .keystore <<< "${KEYSTORE_JSON}" | base64 --decode > "${KEYSTORE_PATH}"
+          chmod 600 "${KEYSTORE_PATH}"
+          unset KEYSTORE_JSON
+
+          export ORG_GRADLE_PROJECT_ANDROID_UPLOAD_STORE_FILE="${KEYSTORE_PATH}"
+          export ORG_GRADLE_PROJECT_ANDROID_UPLOAD_STORE_PASSWORD="${STORE_PASSWORD}"
+          export ORG_GRADLE_PROJECT_ANDROID_UPLOAD_KEY_ALIAS="${KEY_ALIAS}"
+          export ORG_GRADLE_PROJECT_ANDROID_UPLOAD_KEY_PASSWORD="${KEY_PASSWORD}"
+
+          bundle exec fastlane android upload track:"${TRACK}"
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION_CODE: ${{ steps.version-code.outputs.version-code }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### Android ${APP} ${VERSION}"
+            echo ""
+            echo "| Track | versionName | versionCode | Result |"
+            echo "| --- | --- | --- | --- |"
+            echo "| ${TRACK} | ${VERSION} | ${VERSION_CODE:-n/a} | ${OUTCOME} |"
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -7,14 +7,25 @@ on:
     workflows: [CI] # the name of the repository's CI workflow
     types: [completed]
     branches: [main]
+  release:
+    types: [prereleased, released]
 
 permissions: {}
 
 jobs:
   draft:
     if: >-
+      github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
     permissions:
       contents: write
     uses: yankovichapps/workflows/.github/workflows/release-draft.yml@<sha> # v1
+
+  # pre-release → Play internal, release → Play production
+  android:
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+      id-token: write
+    uses: yankovichapps/workflows/.github/workflows/release-android.yml@<sha> # v1
