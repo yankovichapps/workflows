@@ -1,9 +1,12 @@
-# Builds the Android App Bundle of the app named in a release tag
-# (`<app>@<version>`) and uploads it to a Google Play track.
+# Releases the Android app named in a release tag (`<app>@<version>`) on a
+# Google Play track.
 #
-# - versionName: the version from the tag
-# - versionCode: the highest version code Google Play has accepted, plus one
 # - track: `internal` for a pre-release, `production` for a release
+# - production: when the internal track has a release of this version (a
+#   tested pre-release whose checkbox was unticked), that release is promoted
+#   to production as it is, without rebuilding. Otherwise the app is built.
+# - build: versionName is the version from the tag; versionCode is the highest
+#   version code Google Play has accepted, plus one
 #
 # The calling repository provides, per app (see README):
 # - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
@@ -43,7 +46,7 @@ on:
         default: '3.3'
     outputs:
       version-code:
-        description: 'The versionCode uploaded to Google Play'
+        description: 'The versionCode uploaded to Google Play (empty when a release was promoted)'
         value: ${{ jobs.android.outputs.version-code }}
 
 jobs:
@@ -93,9 +96,69 @@ jobs:
           fi
           echo "track=${TRACK}" >> "${GITHUB_OUTPUT}"
 
+  # `released` fires both for a direct production release and for unticking
+  # "pre-release" later, so Play itself tells which one it is.
+  promote:
+    name: Promote ${{ needs.resolve.outputs.tag }} (internal → production)
+    needs: resolve
+    if: needs.resolve.outputs.track == 'production'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.app }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    concurrency:
+      group: release-android-${{ github.repository }}-${{ needs.resolve.outputs.app }}
+      cancel-in-progress: false
+    outputs:
+      action: ${{ steps.promote.outputs.action }}
+    steps:
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud via WIF
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+
+      - name: Promote the tested internal release
+        id: promote
+        env:
+          PLAY_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+          ANDROID_PACKAGE: ${{ vars.ANDROID_PACKAGE }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          node .release-tooling/scripts/release/play-promote.mjs \
+            --package "${ANDROID_PACKAGE}" --version "${VERSION}" | tee -a "${GITHUB_OUTPUT}"
+
+      - name: Summary
+        env:
+          ACTION: ${{ steps.promote.outputs.action }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          case "${ACTION}" in
+            promote) MESSAGE="Promoted the tested internal release of ${TAG} to production." ;;
+            done) MESSAGE="Production already has ${TAG}, nothing to do." ;;
+            *) MESSAGE="No internal release of ${TAG}: building it for production." ;;
+          esac
+          echo "### Android ${TAG}: ${MESSAGE}" >> "${GITHUB_STEP_SUMMARY}"
+
   android:
     name: Android (${{ needs.resolve.outputs.tag }} → ${{ needs.resolve.outputs.track }})
-    needs: resolve
+    needs: [resolve, promote]
+    # Runs for every other track, and for production when nothing was promoted
+    if: >-
+      !cancelled() && needs.resolve.result == 'success' &&
+      (needs.promote.result == 'skipped' || needs.promote.outputs.action == 'build')
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve.outputs.app }}
     permissions:
@@ -206,6 +269,8 @@ jobs:
           SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
           ORG_GRADLE_PROJECT_versionName: ${{ needs.resolve.outputs.version }}
           ORG_GRADLE_PROJECT_versionCode: ${{ steps.version-code.outputs.version-code }}
+          # The release is named after the version, so a later promotion finds it
+          SUPPLY_RELEASE_NAME: ${{ needs.resolve.outputs.version }}
         run: |
           KEYSTORE_JSON="$(gcloud secrets versions access latest --secret="${KEYSTORE_SECRET_ID}" --project="${GCP_PROJECT}")"
           STORE_PASSWORD="$(jq -er .storePassword <<< "${KEYSTORE_JSON}")"

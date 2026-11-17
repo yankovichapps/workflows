@@ -1,0 +1,188 @@
+# Submits the iOS build of a release (`<app>@<version>`) for App Store review,
+# unless the release is a pre-release (then the build stays in TestFlight).
+#
+# Xcode Cloud builds the tag and uploads to TestFlight on its own. This
+# workflow runs on two events of the calling repository:
+# - repository_dispatch `ios-uploaded`: Xcode Cloud archived the tag
+#   (templates/xcode-cloud/ci_post_xcodebuild.sh, payload tag + build_number)
+# - release `released`: published as a release, or "pre-release" unticked
+#   later. If Xcode Cloud has not uploaded a build of the version yet, there
+#   is nothing to submit now: the dispatch submits it when the build arrives.
+#
+# The calling repository provides, per app (see README):
+# - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
+#   IOS_BUNDLE_ID, SECRET_APP_STORE_CONNECT_API_KEY, and the repository variable
+#   GCP_WORKLOAD_IDENTITY_PROVIDER
+# - fastlane lane `ios submit version:<v> [build_number:<n>]` in apps/<app>/ios
+#   that waits for processing, submits, and does nothing when the build is not
+#   there yet or the version is already submitted
+name: iOS Submit
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag <app>@<version>. Default: from the dispatch payload or the release event'
+        type: string
+        required: false
+        default: ''
+      build-number:
+        description: 'Xcode Cloud build number. Default: from the dispatch payload, else the newest build of the version'
+        type: string
+        required: false
+        default: ''
+      ruby-version:
+        description: 'Ruby for fastlane; runner images only ship the newest patch of a minor'
+        type: string
+        required: false
+        default: '3.3'
+
+jobs:
+  resolve:
+    name: Resolve release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # the release's pre-release flag
+    outputs:
+      app: ${{ steps.tag.outputs.app }}
+      version: ${{ steps.tag.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      build-number: ${{ steps.tag.outputs.build-number }}
+      submit: ${{ steps.release.outputs.submit }}
+    steps:
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      # The dispatch payload is untrusted input: it only reaches the shell via
+      # env and is validated before anything uses it
+      - name: Parse tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build-number }}
+          PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
+          PAYLOAD_BUILD_NUMBER: ${{ github.event.client_payload.build_number }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="${INPUT_TAG:-${PAYLOAD_TAG:-${EVENT_TAG}}}"
+          BUILD_NUMBER="${INPUT_BUILD_NUMBER:-${PAYLOAD_BUILD_NUMBER}}"
+          if [[ -n "${BUILD_NUMBER}" && ! "${BUILD_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid build number: ${BUILD_NUMBER}"
+            exit 1
+          fi
+          node .release-tooling/scripts/release/release-tag.mjs "${TAG}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "tag=${TAG}"
+            echo "build-number=${BUILD_NUMBER}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # Read from the release itself, not the event: by the time Xcode Cloud
+      # dispatches, the checkbox may have changed
+      - name: Read the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if ! PRERELEASE="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease --jq .isPrerelease)"; then
+            echo "::error::No published release for ${TAG}"
+            exit 1
+          fi
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            echo "${TAG} is a pre-release: the build stays in TestFlight." | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "submit=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "submit=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+  submit:
+    name: Submit ${{ needs.resolve.outputs.tag }} for review
+    needs: resolve
+    if: needs.resolve.outputs.submit == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.app }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    # The dispatch and the release event can arrive close together: one at a time
+    concurrency:
+      group: ios-submit-${{ github.repository }}-${{ needs.resolve.outputs.app }}
+      cancel-in-progress: false
+    env:
+      APP: ${{ needs.resolve.outputs.app }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      BUILD_NUMBER: ${{ needs.resolve.outputs.build-number }}
+    steps:
+      - name: Check out ${{ needs.resolve.outputs.tag }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check app layout
+        run: |
+          if [[ ! -d "apps/${APP}/ios" ]]; then
+            echo "::error::apps/${APP}/ios not found: the tag does not name an iOS app"
+            exit 1
+          fi
+
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          working-directory: apps/${{ needs.resolve.outputs.app }}
+          bundler-cache: true
+
+      - name: Authenticate to Google Cloud via WIF
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # The API key exists only inside this step's shell. The Fastfile's
+      # before_all reads APP_STORE_CONNECT_API_KEY_* (key content as base64).
+      - name: Wait for processing & submit for review
+        working-directory: apps/${{ needs.resolve.outputs.app }}/ios
+        env:
+          APP_IDENTIFIER: ${{ vars.IOS_BUNDLE_ID }}
+          GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          API_KEY_SECRET_ID: ${{ vars.SECRET_APP_STORE_CONNECT_API_KEY }}
+        run: |
+          API_KEY_JSON="$(gcloud secrets versions access latest --secret="${API_KEY_SECRET_ID}" --project="${GCP_PROJECT}")"
+          API_KEY_CONTENT="$(jq -er .key <<< "${API_KEY_JSON}")"
+          if [[ "${API_KEY_CONTENT}" == *$'\n'* ]]; then
+            echo "::error::'key' in ${API_KEY_SECRET_ID} must be the .p8 file as single-line base64"
+            exit 1
+          fi
+          echo "::add-mask::${API_KEY_CONTENT}"
+
+          APP_STORE_CONNECT_API_KEY_ID="$(jq -er .keyId <<< "${API_KEY_JSON}")"
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID="$(jq -er .issuerId <<< "${API_KEY_JSON}")"
+          export APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_KEY_ISSUER_ID
+          export APP_STORE_CONNECT_API_KEY_KEY="${API_KEY_CONTENT}"
+          unset API_KEY_JSON
+
+          ARGS=("version:${VERSION}")
+          if [[ -n "${BUILD_NUMBER}" ]]; then
+            ARGS+=("build_number:${BUILD_NUMBER}")
+          fi
+          bundle exec fastlane ios submit "${ARGS[@]}"
+
+      - name: Summary
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### iOS ${APP} ${VERSION}"
+            echo ""
+            echo "| Build | Result |"
+            echo "| --- | --- |"
+            echo "| ${BUILD_NUMBER:-newest of ${VERSION}} | ${OUTCOME} |"
+          } >> "${GITHUB_STEP_SUMMARY}"

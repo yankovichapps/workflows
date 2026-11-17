@@ -13,9 +13,8 @@ repository. It contains no secrets and no project-specific values.
 | Workflow                                                          | Status  | What it does                                                                  |
 | ----------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
 | [`release-draft.yml`](.github/workflows/release-draft.yml)        | ready   | One draft release per app, `<app>@<next version>`, from conventional commits |
-| [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Version from the tag, `versionCode` = Play's highest + 1, build and upload    |
-| `release-promote.yml`                                             | planned | Pre-release → release: promote the tested builds without rebuilding           |
-| `ios-submit.yml`                                                  | planned | After the Xcode Cloud upload: TestFlight only, or submit for review           |
+| [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Pre-release → build for Play internal; release → promote the tested internal release to production, or build for production |
+| [`ios-submit.yml`](.github/workflows/ios-submit.yml)              | ready   | Release (after the Xcode Cloud upload, or on unticking pre-release) → submit the build for review |
 | `store-metadata.yml`                                              | planned | Texts and screenshots to the App Store and Google Play                        |
 
 ## Using it in a repository
@@ -32,7 +31,7 @@ repository. It contains no secrets and no project-specific values.
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `ANDROID_PACKAGE`, `SECRET_ANDROID_UPLOAD_KEYSTORE` (managed by `<repo>-infra`); repository variable `GCP_WORKLOAD_IDENTITY_PROVIDER` |
 | Keystore secret              | JSON `{"keystore":"<base64>","storePassword","keyAlias","keyPassword"}` in Secret Manager           |
-| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it |
+| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it (the workflow sets `SUPPLY_RELEASE_NAME` to the version, so promotion can find the release) |
 | Gradle (`android/app/build.gradle`) | `versionCode`/`versionName` from the project properties of the same name (placeholders `1` / `0.0.0`); release signing from `ANDROID_UPLOAD_STORE_FILE`, `ANDROID_UPLOAD_STORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS`, `ANDROID_UPLOAD_KEY_PASSWORD` |
 | Nx target `release-prepare`  | optional: generates gitignored sources the build needs; called with `--platform=android`           |
 
@@ -52,6 +51,26 @@ signingConfigs {
     }
 }
 ```
+
+Both platforms promote the tested builds when you untick "pre-release" on a published
+release: GitHub sends `released` for that and for a direct release alike, so each workflow asks
+the store whether a tested build of the version is already there.
+
+| Event                           | Android (`release-android`)                         | iOS (Xcode Cloud + `ios-submit`)                          |
+| ------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
+| publish as pre-release          | build → internal                                    | Xcode Cloud → TestFlight; no submission                   |
+| publish as release              | no internal release of the version → build → production | Xcode Cloud → TestFlight → dispatch → submit for review |
+| untick pre-release              | internal release of the version → production (same AAB) | newest build of the version → submit for review         |
+
+### What an app provides for `ios-submit` and Xcode Cloud
+
+| Item                         | Convention                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `IOS_BUNDLE_ID`, `SECRET_APP_STORE_CONNECT_API_KEY` (JSON `{"keyId","issuerId","key":"<.p8 as base64>"}`) |
+| fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number` (default: the newest build of the version). It waits for processing and submits for review; it does nothing when there is no build yet or the version is already submitted, because the dispatch and the release event can both arrive |
+| Info.plist                   | `CFBundleShortVersionString` `0.0.0`, `CFBundleVersion` `1` (in every target that has a version) |
+| Xcode Cloud workflow         | start condition _Tag Changes_, prefix `<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
+| `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the tag and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
 
 ### How the next version is computed
 
