@@ -12,6 +12,15 @@ on:
   # Sent by Xcode Cloud after archiving a release tag (ci_post_xcodebuild.sh)
   repository_dispatch:
     types: [ios-uploaded]
+  # Manual iOS submission, e.g. when the Xcode Cloud dispatch failed
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. keep-an-eye@3.9.0'
+        required: true
+      build-number:
+        description: 'Xcode Cloud build number (empty: the newest build of the version)'
+        required: false
 
 permissions: {}
 
@@ -39,8 +48,12 @@ jobs:
   ios:
     if: >-
       github.event_name == 'repository_dispatch' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'release' && github.event.action == 'released')
     permissions:
       contents: read
       id-token: write
     uses: yankovichapps/workflows/.github/workflows/ios-submit.yml@<sha> # v1
+    with:
+      tag: ${{ inputs.tag }}
+      build-number: ${{ inputs.build-number }}

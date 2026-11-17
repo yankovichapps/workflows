@@ -13,9 +13,13 @@
 # - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
 #   IOS_BUNDLE_ID, SECRET_APP_STORE_CONNECT_API_KEY, and the repository variable
 #   GCP_WORKLOAD_IDENTITY_PROVIDER
-# - fastlane lane `ios submit version:<v> [build_number:<n>]` in apps/<app>/ios
-#   that waits for processing, submits, and does nothing when the build is not
-#   there yet or the version is already submitted
+# - fastlane lane `ios submit version:<v> [build_number:<n>]` in apps/<app>/ios:
+#   - with build_number (dispatch): wait until that build appears in App Store
+#     Connect and is processed (the dispatch is sent before Xcode Cloud's
+#     TestFlight upload), with a timeout, then submit
+#   - without build_number (release event): submit the newest build of the
+#     version; if there is none yet, do nothing (the dispatch will submit it)
+#   - either way, do nothing when the version is already submitted
 name: iOS Submit
 
 on:

@@ -269,8 +269,9 @@ jobs:
           SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
           ORG_GRADLE_PROJECT_versionName: ${{ needs.resolve.outputs.version }}
           ORG_GRADLE_PROJECT_versionCode: ${{ steps.version-code.outputs.version-code }}
-          # The release is named after the version, so a later promotion finds it
-          SUPPLY_RELEASE_NAME: ${{ needs.resolve.outputs.version }}
+          # supply names the track release after version_name, so a later
+          # promotion finds it by the version
+          SUPPLY_VERSION_NAME: ${{ needs.resolve.outputs.version }}
         run: |
           KEYSTORE_JSON="$(gcloud secrets versions access latest --secret="${KEYSTORE_SECRET_ID}" --project="${GCP_PROJECT}")"
           STORE_PASSWORD="$(jq -er .storePassword <<< "${KEYSTORE_JSON}")"

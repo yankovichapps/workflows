@@ -80,12 +80,19 @@ describe('planPromotion', () => {
     assert.equal(planPromotion({ version: '3.9.0', internal, production }).action, 'promote');
   });
 
+  it('never promotes an internal draft or halted release', () => {
+    for (const status of ['draft', 'halted', undefined]) {
+      const track = { releases: [{ name: '3.9.0', versionCodes: ['146'], status }] };
+      assert.deepEqual(planPromotion({ version: '3.9.0', internal: track, production: {} }), { action: 'build' }, String(status));
+    }
+  });
+
   it('builds when the internal track has no release of the version', () => {
-    for (const track of [{}, { releases: [{ name: '3.10.0', versionCodes: ['147'] }] }, { releases: [{ name: '3.9.0' }] }]) {
+    for (const track of [{}, { releases: [{ name: '3.10.0', versionCodes: ['147'], status: 'completed' }] }, { releases: [{ name: '3.9.0', status: 'completed' }] }]) {
       assert.deepEqual(planPromotion({ version: '3.9.0', internal: track, production: {} }), { action: 'build' });
     }
     // 3.9.0 must not match 13.9.0 ...
-    assert.equal(planPromotion({ version: '3.9.0', internal: { releases: [{ name: '13.9.0', versionCodes: ['1'] }] }, production: {} }).action, 'build');
+    assert.equal(planPromotion({ version: '3.9.0', internal: { releases: [{ name: '13.9.0', versionCodes: ['1'], status: 'completed' }] }, production: {} }).action, 'build');
   });
 });
 

@@ -31,7 +31,7 @@ repository. It contains no secrets and no project-specific values.
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `ANDROID_PACKAGE`, `SECRET_ANDROID_UPLOAD_KEYSTORE` (managed by `<repo>-infra`); repository variable `GCP_WORKLOAD_IDENTITY_PROVIDER` |
 | Keystore secret              | JSON `{"keystore":"<base64>","storePassword","keyAlias","keyPassword"}` in Secret Manager           |
-| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it (the workflow sets `SUPPLY_RELEASE_NAME` to the version, so promotion can find the release) |
+| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it (the workflow sets `SUPPLY_VERSION_NAME` to the version, which names the Play release, so promotion can find it) |
 | Gradle (`android/app/build.gradle`) | `versionCode`/`versionName` from the project properties of the same name (placeholders `1` / `0.0.0`); release signing from `ANDROID_UPLOAD_STORE_FILE`, `ANDROID_UPLOAD_STORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS`, `ANDROID_UPLOAD_KEY_PASSWORD` |
 | Nx target `release-prepare`  | optional: generates gitignored sources the build needs; called with `--platform=android`           |
 
@@ -67,9 +67,10 @@ the store whether a tested build of the version is already there.
 | Item                         | Convention                                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `IOS_BUNDLE_ID`, `SECRET_APP_STORE_CONNECT_API_KEY` (JSON `{"keyId","issuerId","key":"<.p8 as base64>"}`) |
-| fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number` (default: the newest build of the version). It waits for processing and submits for review; it does nothing when there is no build yet or the version is already submitted, because the dispatch and the release event can both arrive |
+| fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number`. **With** `build_number` (Xcode Cloud dispatch, sent before the TestFlight upload): wait until that build appears and is processed, with a timeout, then submit. **Without** (release event): submit the newest build of the version, or do nothing when there is none yet, since the dispatch will submit it. Do nothing when the version is already submitted: both events can arrive |
 | Info.plist                   | `CFBundleShortVersionString` `0.0.0`, `CFBundleVersion` `1` (in every target that has a version) |
 | Xcode Cloud workflow         | start condition _Tag Changes_, prefix `<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
+| Manual submission            | the caller's `workflow_dispatch` (tag, optional build number), e.g. when the dispatch failed |
 | `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the tag and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
 
 ### How the next version is computed

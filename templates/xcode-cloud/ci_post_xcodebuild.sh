@@ -37,12 +37,13 @@ PAYLOAD=$(printf '{"event_type":"ios-uploaded","client_payload":{"tag":"%s","bui
 echo "Dispatching ios-uploaded for ${CI_TAG} (build ${CI_BUILD_NUMBER})..."
 
 # A failed dispatch must not fail the build: the archive still goes to
-# TestFlight, and unticking/re-saving the release or a manual run submits it.
+# TestFlight, and a manual run of the Release workflow (tag, build number)
+# submits it.
 if ! curl --fail --silent --show-error --retry 3 \
   -X POST "https://api.github.com/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}/dispatches" \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer ${GITHUB_DISPATCH_TOKEN:?GITHUB_DISPATCH_TOKEN is not set}" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   -d "${PAYLOAD}"; then
-  echo "warning: GitHub dispatch failed. Run the Release workflow's ios-submit for ${CI_TAG} build ${CI_BUILD_NUMBER} manually."
+  echo "warning: GitHub dispatch failed. Run the Release workflow manually (Actions > Release > Run workflow) with tag ${CI_TAG} and build number ${CI_BUILD_NUMBER}."
 fi

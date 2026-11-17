@@ -5,8 +5,9 @@
  * release notes as the internal release of that version.
  *
  * Releases are matched by name: release-android names every upload after the
- * version (SUPPLY_RELEASE_NAME), and Play's own default name "<code> (<version>)"
- * is accepted too.
+ * version (SUPPLY_VERSION_NAME), and Play's own default name "<code> (<version>)"
+ * is accepted too. Only an internal release testers received (completed, or
+ * rolling out) is promoted, never a draft or a halted one.
  *
  * Usage (PLAY_ACCESS_TOKEN with the androidpublisher scope):
  *   node play-promote.mjs --package com.example.app --version 3.9.0
@@ -21,6 +22,9 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { withEdit } from './play-api.mjs';
+
+/** Release statuses whose build reached the testers. */
+const TESTED_STATUSES = new Set(['completed', 'inProgress']);
 
 /** Whether a track release is the release of `version`. */
 export const isReleaseOf = (release, version) =>
@@ -39,7 +43,10 @@ export const planPromotion = ({ version, internal, production }) => {
   }
 
   const tested = (internal?.releases ?? []).find(
-    (release) => isReleaseOf(release, version) && (release.versionCodes ?? []).length > 0,
+    (release) =>
+      isReleaseOf(release, version) &&
+      TESTED_STATUSES.has(release.status) &&
+      (release.versionCodes ?? []).length > 0,
   );
   if (!tested) {
     return { action: 'build' };
