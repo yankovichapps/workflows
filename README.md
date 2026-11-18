@@ -14,6 +14,7 @@ repository. It contains no secrets and no project-specific values.
 | ----------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
 | [`release-draft.yml`](.github/workflows/release-draft.yml)        | ready   | One draft release per app, `<app>@<next version>`, from conventional commits |
 | [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Pre-release → build for Play internal; release → promote the tested internal release to production, or build for production |
+| [`ios-build.yml`](.github/workflows/ios-build.yml)                | ready   | Release published → push `release/<app>@<version>`, which starts Xcode Cloud |
 | [`ios-submit.yml`](.github/workflows/ios-submit.yml)              | ready   | Release (after the Xcode Cloud upload, or on unticking pre-release) → submit the build for review |
 | [`store-metadata.yml`](.github/workflows/store-metadata.yml)      | ready   | Manual: texts and screenshots to the App Store (into a version) and Google Play |
 
@@ -58,9 +59,14 @@ the store whether a tested build of the version is already there.
 
 | Event                           | Android (`release-android`)                         | iOS (Xcode Cloud + `ios-submit`)                          |
 | ------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
-| publish as pre-release          | build → internal                                    | Xcode Cloud → TestFlight; no submission                   |
-| publish as release              | no internal release of the version → build → production | Xcode Cloud → TestFlight → dispatch → submit for review |
-| untick pre-release              | internal release of the version → production (same AAB) | newest build of the version → submit for review         |
+| publish as pre-release          | build → internal                                    | push `release/<tag>` → Xcode Cloud → TestFlight; no submission |
+| publish as release              | no internal release of the version → build → production | push `release/<tag>` → Xcode Cloud → TestFlight → dispatch → submit for review |
+| untick pre-release              | internal release of the version → production (same AAB) | branch exists, no rebuild; newest build of the version → submit for review |
+
+**Why a branch starts Xcode Cloud, not the tag:** publishing a draft makes GitHub create the
+tag on the server, and Xcode Cloud never receives such a tag; it only sees refs that arrive
+with a git push. `ios-build` pushes `release/<app>@<version>` with git, which always reaches
+it. The branches stay as a record of what Xcode Cloud built.
 
 ### What an app provides for `ios-submit` and Xcode Cloud
 
@@ -69,9 +75,9 @@ the store whether a tested build of the version is already there.
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `IOS_BUNDLE_ID`, `SECRET_APP_STORE_CONNECT_API_KEY` (JSON `{"keyId","issuerId","key":"<.p8 as base64>"}`) |
 | fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number`. **With** `build_number` (Xcode Cloud dispatch, sent before the TestFlight upload): wait until that build appears and is processed, with a timeout, then submit. **Without** (release event): submit the newest build of the version, or do nothing when there is none yet, since the dispatch will submit it. Do nothing when the version is already submitted: both events can arrive |
 | Info.plist                   | `CFBundleShortVersionString` `0.0.0`, `CFBundleVersion` `1` (in every target that has a version) |
-| Xcode Cloud workflow         | start condition _Tag Changes_, prefix `<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
+| Xcode Cloud workflow         | start condition _Branch Changes_, prefix `release/<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
 | Manual submission            | the caller's `workflow_dispatch` (tag, optional build number), e.g. when the dispatch failed |
-| `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the tag and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
+| `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the release branch (or tag) and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
 
 ### Store texts and screenshots (`store-metadata`)
 

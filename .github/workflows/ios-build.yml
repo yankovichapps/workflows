@@ -1,0 +1,86 @@
+# Starts the Xcode Cloud build of a release (`<app>@<version>`) by pushing the
+# branch `release/<app>@<version>` at the tag's commit.
+#
+# Why a branch: publishing a draft release makes GitHub create the tag on the
+# server, and Xcode Cloud never sees such a tag (only refs that arrive with a
+# git push). A branch pushed here with git always reaches it. The Xcode Cloud
+# workflow starts on *Branch Changes* with the prefix `release/<app>@`;
+# ci_post_clone.sh reads the version from the branch name.
+#
+# Idempotent: pushing the branch again at the same commit (unticking
+# "pre-release" later, a re-run) changes nothing, so the tested build is not
+# rebuilt. The branches stay as a record of what Xcode Cloud built.
+name: iOS Build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag <app>@<version>. Default: the tag of the release event'
+        type: string
+        required: false
+        default: ''
+    outputs:
+      branch:
+        description: 'The pushed branch, empty when the app has no iOS project'
+        value: ${{ jobs.start.outputs.branch }}
+
+jobs:
+  start:
+    name: Start Xcode Cloud
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push release/<tag>
+    outputs:
+      branch: ${{ steps.push.outputs.branch }}
+    steps:
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      - name: Parse tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="${INPUT_TAG:-${EVENT_TAG}}"
+          node .release-tooling/scripts/release/release-tag.mjs "${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      # The token is only used for the push below; nothing from the repository
+      # is executed in this job
+      - name: Check out ${{ steps.tag.outputs.tag }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          path: repo
+
+      - name: Push release/${{ steps.tag.outputs.tag }}
+        id: push
+        working-directory: repo
+        env:
+          APP: ${{ steps.tag.outputs.app }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if [[ ! -d "apps/${APP}/ios" ]]; then
+            echo "${APP} has no iOS project, nothing to build." | tee -a "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          BRANCH="release/${TAG}"
+          SHA="$(git rev-parse HEAD)"
+          REMOTE_SHA="$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)"
+
+          if [[ "${REMOTE_SHA}" == "${SHA}" ]]; then
+            MESSAGE="${BRANCH} already points at ${SHA:0:7}: Xcode Cloud built it before, nothing to start."
+          else
+            git push origin "${SHA}:refs/heads/${BRANCH}"
+            MESSAGE="Pushed ${BRANCH} at ${SHA:0:7}: Xcode Cloud builds it and uploads to TestFlight."
+          fi
+          echo "### iOS ${TAG}: ${MESSAGE}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "branch=${BRANCH}" >> "${GITHUB_OUTPUT}"
