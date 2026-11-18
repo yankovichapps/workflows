@@ -100,8 +100,10 @@ jobs:
       ios-version: ${{ inputs.ios-version }}
 ```
 
-It runs the lanes `ios upload_metadata` (into the App Store version, created if needed; only
-possible before the version is submitted for review) and `android upload_metadata`.
+It runs the lanes `ios upload_metadata` (into the App Store version, created if needed) and
+`android upload_metadata`. Apple locks a version's texts and screenshots once it is submitted
+for review, so the iOS job checks the version's state first and stops with a clear message
+when it is locked: run it **before publishing** the release, or remove the version from review.
 
 ### How the next version is computed
 

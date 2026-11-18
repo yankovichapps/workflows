@@ -4,8 +4,9 @@
 #
 # - iOS: into the App Store version `ios-version` (default: the version of the
 #   app's newest release tag). deliver creates the version if it does not exist
-#   yet. Screenshots can only change while the version is not in review, so
-#   upload them before a release is submitted.
+#   yet. Apple locks a version once it is submitted for review, so the job
+#   first checks the version's state and stops when it is locked: upload
+#   before publishing the release, or remove the version from review.
 # - Android: the Google Play listing, which applies to every track at once.
 #
 # The calling repository provides, per app:
@@ -102,6 +103,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: ${{ inputs.ruby-version }}
@@ -139,6 +148,23 @@ jobs:
           export APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_KEY_ISSUER_ID
           export APP_STORE_CONNECT_API_KEY_KEY="${API_KEY_CONTENT}"
           unset API_KEY_JSON
+
+          # Apple locks a version once it is submitted: fail fast and clearly
+          # instead of hundreds of refused screenshot deletions
+          CHECK="$(node "${GITHUB_WORKSPACE}/.release-tooling/scripts/release/app-store-version.mjs" \
+            --bundle-id "${APP_IDENTIFIER}" --version "${DELIVER_APP_VERSION}")"
+          STATE="$(sed -n 's/^state=//p' <<< "${CHECK}")"
+          if [[ "$(sed -n 's/^editable=//p' <<< "${CHECK}")" != "true" ]]; then
+            MESSAGE="App Store version ${DELIVER_APP_VERSION} is ${STATE}: Apple locks texts and screenshots once a version is submitted. Upload into the next version (ios-version), or remove ${DELIVER_APP_VERSION} from review in App Store Connect and run this again."
+            echo "::error::${MESSAGE}"
+            echo "### ❌ ${MESSAGE}" >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+          if [[ "${STATE}" == "NONE" ]]; then
+            echo "App Store version ${DELIVER_APP_VERSION} does not exist yet: deliver creates it."
+          else
+            echo "App Store version ${DELIVER_APP_VERSION} is ${STATE}: uploading."
+          fi
 
           bundle exec fastlane ios upload_metadata
 
