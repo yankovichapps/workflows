@@ -24,7 +24,8 @@ repository. It contains no secrets and no project-specific values.
 2. Tag the commit of each app's current release once, e.g.
    `git tag keep-an-eye@3.8.0 <sha> && git push origin keep-an-eye@3.8.0`.
 3. Copy [`templates/release.yml`](templates/release.yml) to `.github/workflows/release.yml`
-   and pin `<sha>` to a commit of this repository. Dependabot keeps the pin updated.
+   and pin it to a release of this repository: `@<commit sha> # v1.0.0`. Dependabot's
+   `github-actions` updates find the next release by that comment.
 
 ### What an app provides for `release-android`
 
@@ -119,6 +120,13 @@ Expo apps commit `ios/` and `android/` and are released like any React Native ap
 the CI job from [`templates/expo/ci-prebuild-check.yml`](templates/expo/ci-prebuild-check.yml):
 it re-applies the Expo config with `expo prebuild --no-install` (no `--clean`, so no
 `pod install` and no macOS runner) and fails when the committed native folders change.
+
+## Versioning
+
+Releases of this repository are tags `vX.Y.Z` (GitHub Releases), created by an admin after
+merging: patch for fixes, minor for new inputs or workflows, major for changes callers have to
+adapt to. Callers pin the release's commit SHA with the tag as a comment, so Dependabot can
+update them; a pin to a commit on `main` without a tag never gets updates.
 
 ## Development
 
