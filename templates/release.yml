@@ -1,6 +1,17 @@
-# Copy to <repo>/.github/workflows/release.yml and replace <sha> with the
-# commit of yankovichapps/workflows to use (Dependabot keeps it updated).
+# Copy to <repo>/.github/workflows/release.yml and replace <sha> # v1 with the
+# commit of a release of yankovichapps/workflows and its tag, e.g.
+# @1a2b3c… # v1.0.0. Dependabot (github-actions) keeps the pin updated.
 name: Release
+# One title per kind of run, so the Actions list shows what each one did
+run-name: >-
+  ${{
+    github.event_name == 'release' && format('{0} · {1}', github.event.release.tag_name,
+      github.event.release.prerelease && 'pre-release' || 'release') ||
+    github.event_name == 'repository_dispatch' && format('{0} · iOS uploaded (build {1})',
+      github.event.client_payload.tag, github.event.client_payload.build_number) ||
+    github.event_name == 'workflow_dispatch' && format('{0} · iOS submit', inputs.tag) ||
+    'Draft after CI'
+  }}
 
 on:
   workflow_run:
