@@ -1,7 +1,8 @@
 #!/bin/sh
 # ==============================================================================
 # Xcode Cloud: runs after xcodebuild. Copy to
-# apps/<app>/ios/ci_scripts/ci_post_xcodebuild.sh (executable).
+# <app folder>/ios/ci_scripts/ci_post_xcodebuild.sh (executable), e.g.
+# apps/<app>/ios/ci_scripts/.
 #
 # After a successful archive of a release (branch `release/<app>@<version>`,
 # or the tag `<app>@<version>`), notifies
@@ -21,8 +22,11 @@ if [ "${CI_XCODEBUILD_ACTION:-}" != "archive" ] || [ "${CI_XCODEBUILD_EXIT_CODE:
   exit 0
 fi
 
-# apps/<app>/ios/ci_scripts -> <app> (= Nx project name = GitHub environment)
-APP_NAME="$(basename "$(cd "$(dirname "$0")/../.." && pwd)")"
+# <app> is the Nx project name (= tag prefix = GitHub environment). It may
+# differ from the folder (project pawpower-mobile in apps/mobile); a
+# project.json without "name" is named after its folder. plutil reads JSON too.
+APP_PATH="$(cd "$(dirname "$0")/../.." && pwd)"
+APP_NAME="$(plutil -extract name raw -o - "${APP_PATH}/project.json" 2>/dev/null || basename "${APP_PATH}")"
 
 RELEASE_TAG="${CI_TAG:-}"
 case "${CI_BRANCH:-}" in

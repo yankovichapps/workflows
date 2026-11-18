@@ -1,7 +1,8 @@
 #!/bin/sh
 # ==============================================================================
 # Xcode Cloud: runs after the repository is cloned, before xcodebuild.
-# Copy to apps/<app>/ios/ci_scripts/ci_post_clone.sh (executable).
+# Copy to <app folder>/ios/ci_scripts/ci_post_clone.sh (executable), e.g.
+# apps/<app>/ios/ci_scripts/.
 #
 # 1. Release version: when Xcode Cloud builds a release, writes <version> into
 #    every Info.plist of the app whose CFBundleShortVersionString is the
@@ -15,11 +16,13 @@
 set -eu
 
 NODE_FORMULA="node@24"
-# apps/<app>/ios/ci_scripts -> apps/<app>/ios
+# <app folder>/ios/ci_scripts -> <app folder>/ios
 APP_IOS_PATH="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="$(dirname "${APP_IOS_PATH}")"
-# apps/<app> -> <app> (= Nx project name)
-APP_NAME="$(basename "${APP_PATH}")"
+# <app> is the Nx project name, the prefix of its release tags. It may differ
+# from the folder (project pawpower-mobile in apps/mobile); a project.json
+# without "name" is named after its folder. plutil reads JSON too.
+APP_NAME="$(plutil -extract name raw -o - "${APP_PATH}/project.json" 2>/dev/null || basename "${APP_PATH}")"
 
 # --- 1. Release version -------------------------------------------------------
 RELEASE_TAG="${CI_TAG:-}"

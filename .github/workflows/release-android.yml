@@ -189,12 +189,17 @@ jobs:
           path: .release-tooling
           persist-credentials: false
 
-      - name: Check app layout
+      # The tag names the Nx project, whose folder may differ (pawpower-mobile in apps/mobile)
+      - name: Locate ${{ needs.resolve.outputs.app }}
+        id: app
         run: |
-          if [[ ! -d "apps/${APP}/android" ]]; then
-            echo "::error::apps/${APP}/android not found: the tag does not name an Android app"
+          ROOT="$(node .release-tooling/scripts/release/app-root.mjs "${APP}")"
+          ROOT="${ROOT#root=}"
+          if [[ ! -d "${ROOT}/android" ]]; then
+            echo "::error::${ROOT}/android not found: ${APP} is not an Android app"
             exit 1
           fi
+          echo "root=${ROOT}" >> "${GITHUB_OUTPUT}"
 
       # Hosted runners have ~14 GB free; a React Native release build needs more
       # (the final native link crashes with "Bus error" when the disk fills up).
@@ -234,7 +239,7 @@ jobs:
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: ${{ inputs.ruby-version }}
-          working-directory: apps/${{ needs.resolve.outputs.app }}
+          working-directory: ${{ steps.app.outputs.root }}
           bundler-cache: true
 
       # Authenticating after the install keeps the credentials away from
@@ -262,7 +267,7 @@ jobs:
       # The keystore credentials exist only inside this step's shell. Gradle reads
       # ORG_GRADLE_PROJECT_<name> environment variables as project properties.
       - name: Build & upload to Google Play
-        working-directory: apps/${{ needs.resolve.outputs.app }}/android
+        working-directory: ${{ steps.app.outputs.root }}/android
         env:
           GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
           KEYSTORE_SECRET_ID: ${{ vars.SECRET_ANDROID_UPLOAD_KEYSTORE }}

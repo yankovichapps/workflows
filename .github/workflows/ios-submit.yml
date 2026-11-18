@@ -129,17 +129,30 @@ jobs:
           ref: refs/tags/${{ needs.resolve.outputs.tag }}
           persist-credentials: false
 
-      - name: Check app layout
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      # The tag names the Nx project, whose folder may differ (pawpower-mobile in apps/mobile)
+      - name: Locate ${{ needs.resolve.outputs.app }}
+        id: app
         run: |
-          if [[ ! -d "apps/${APP}/ios" ]]; then
-            echo "::error::apps/${APP}/ios not found: the tag does not name an iOS app"
+          ROOT="$(node .release-tooling/scripts/release/app-root.mjs "${APP}")"
+          ROOT="${ROOT#root=}"
+          if [[ ! -d "${ROOT}/ios" ]]; then
+            echo "::error::${ROOT}/ios not found: ${APP} is not an iOS app"
             exit 1
           fi
+          echo "root=${ROOT}" >> "${GITHUB_OUTPUT}"
 
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: ${{ inputs.ruby-version }}
-          working-directory: apps/${{ needs.resolve.outputs.app }}
+          working-directory: ${{ steps.app.outputs.root }}
           bundler-cache: true
 
       - name: Authenticate to Google Cloud via WIF
@@ -153,7 +166,7 @@ jobs:
       # The API key exists only inside this step's shell. The Fastfile's
       # before_all reads APP_STORE_CONNECT_API_KEY_* (key content as base64).
       - name: Wait for processing & submit for review
-        working-directory: apps/${{ needs.resolve.outputs.app }}/ios
+        working-directory: ${{ steps.app.outputs.root }}/ios
         env:
           APP_IDENTIFIER: ${{ vars.IOS_BUNDLE_ID }}
           GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
