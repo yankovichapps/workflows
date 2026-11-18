@@ -15,7 +15,7 @@ repository. It contains no secrets and no project-specific values.
 | [`release-draft.yml`](.github/workflows/release-draft.yml)        | ready   | One draft release per app, `<app>@<next version>`, from conventional commits |
 | [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Pre-release → build for Play internal; release → promote the tested internal release to production, or build for production |
 | [`ios-submit.yml`](.github/workflows/ios-submit.yml)              | ready   | Release (after the Xcode Cloud upload, or on unticking pre-release) → submit the build for review |
-| `store-metadata.yml`                                              | planned | Texts and screenshots to the App Store and Google Play                        |
+| [`store-metadata.yml`](.github/workflows/store-metadata.yml)      | ready   | Manual: texts and screenshots to the App Store (into a version) and Google Play |
 
 ## Using it in a repository
 
@@ -72,6 +72,30 @@ the store whether a tested build of the version is already there.
 | Xcode Cloud workflow         | start condition _Tag Changes_, prefix `<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
 | Manual submission            | the caller's `workflow_dispatch` (tag, optional build number), e.g. when the dispatch failed |
 | `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the tag and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
+
+### Store texts and screenshots (`store-metadata`)
+
+Never part of a release. A caller with `workflow_dispatch` runs it by hand:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      app: { description: 'App', required: true, default: <app> }
+      platforms: { type: choice, options: [both, ios, android], default: both }
+      ios-version: { description: 'App Store version (empty: newest release tag)', required: false }
+jobs:
+  metadata:
+    permissions: { contents: read, id-token: write }
+    uses: yankovichapps/workflows/.github/workflows/store-metadata.yml@<sha> # v1
+    with:
+      app: ${{ inputs.app }}
+      platforms: ${{ inputs.platforms }}
+      ios-version: ${{ inputs.ios-version }}
+```
+
+It runs the lanes `ios upload_metadata` (into the App Store version, created if needed; only
+possible before the version is submitted for review) and `android upload_metadata`.
 
 ### How the next version is computed
 

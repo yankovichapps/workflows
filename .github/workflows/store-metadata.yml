@@ -1,0 +1,181 @@
+# Uploads an app's store texts and screenshots from the repository, without a
+# build: fastlane `upload_metadata` lanes in apps/<app>/ios and apps/<app>/android.
+# Never part of a release; run it by hand whenever the listings change.
+#
+# - iOS: into the App Store version `ios-version` (default: the version of the
+#   app's newest release tag). deliver creates the version if it does not exist
+#   yet. Screenshots can only change while the version is not in review, so
+#   upload them before a release is submitted.
+# - Android: the Google Play listing, which applies to every track at once.
+#
+# The calling repository provides, per app:
+# - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
+#   IOS_BUNDLE_ID, SECRET_APP_STORE_CONNECT_API_KEY, and the repository variable
+#   GCP_WORKLOAD_IDENTITY_PROVIDER
+# - fastlane lanes `ios upload_metadata` and `android upload_metadata`
+name: Store metadata
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'App (Nx project name), e.g. keep-an-eye'
+        type: string
+        required: true
+      platforms:
+        description: 'ios, android, or both'
+        type: string
+        required: false
+        default: both
+      ios-version:
+        description: "App Store version to upload into. Default: the version of the app's newest release tag"
+        type: string
+        required: false
+        default: ''
+      ruby-version:
+        description: 'Ruby for fastlane; runner images only ship the newest patch of a minor'
+        type: string
+        required: false
+        default: '3.3'
+
+jobs:
+  resolve:
+    name: Resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ios: ${{ steps.resolve.outputs.ios }}
+      android: ${{ steps.resolve.outputs.android }}
+      ios-version: ${{ steps.resolve.outputs.ios-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve platforms and version
+        id: resolve
+        env:
+          APP: ${{ inputs.app }}
+          PLATFORMS: ${{ inputs.platforms }}
+          IOS_VERSION: ${{ inputs.ios-version }}
+        run: |
+          [[ "${APP}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -d "apps/${APP}" ]] || { echo "::error::Unknown app: ${APP}"; exit 1; }
+          case "${PLATFORMS}" in
+            both) IOS=true; ANDROID=true ;;
+            ios) IOS=true; ANDROID=false ;;
+            android) IOS=false; ANDROID=true ;;
+            *) echo "::error::platforms must be ios, android or both, not ${PLATFORMS}"; exit 1 ;;
+          esac
+
+          if [[ "${IOS}" == "true" ]]; then
+            if [[ -z "${IOS_VERSION}" ]]; then
+              TAG="$(git tag --list "${APP}@*" --sort=-v:refname | head -n 1)"
+              [[ -n "${TAG}" ]] || { echo "::error::No ${APP}@<version> tag: set ios-version"; exit 1; }
+              IOS_VERSION="${TAG#"${APP}"@}"
+            fi
+            [[ "${IOS_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Invalid ios-version: ${IOS_VERSION}"; exit 1; }
+          fi
+
+          {
+            echo "ios=${IOS}"
+            echo "android=${ANDROID}"
+            echo "ios-version=${IOS_VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+  ios:
+    name: App Store (${{ inputs.app }} ${{ needs.resolve.outputs.ios-version }})
+    needs: resolve
+    if: needs.resolve.outputs.ios == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.app }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    concurrency:
+      group: store-metadata-ios-${{ github.repository }}-${{ inputs.app }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          working-directory: apps/${{ inputs.app }}
+          bundler-cache: true
+
+      - name: Authenticate to Google Cloud via WIF
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # The API key exists only inside this step's shell. The Fastfile's
+      # before_all reads APP_STORE_CONNECT_API_KEY_* (key content as base64).
+      - name: Upload texts and screenshots
+        working-directory: apps/${{ inputs.app }}/ios
+        env:
+          APP_IDENTIFIER: ${{ vars.IOS_BUNDLE_ID }}
+          DELIVER_APP_VERSION: ${{ needs.resolve.outputs.ios-version }}
+          GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          API_KEY_SECRET_ID: ${{ vars.SECRET_APP_STORE_CONNECT_API_KEY }}
+        run: |
+          API_KEY_JSON="$(gcloud secrets versions access latest --secret="${API_KEY_SECRET_ID}" --project="${GCP_PROJECT}")"
+          API_KEY_CONTENT="$(jq -er .key <<< "${API_KEY_JSON}")"
+          if [[ "${API_KEY_CONTENT}" == *$'\n'* ]]; then
+            echo "::error::'key' in ${API_KEY_SECRET_ID} must be the .p8 file as single-line base64"
+            exit 1
+          fi
+          echo "::add-mask::${API_KEY_CONTENT}"
+
+          APP_STORE_CONNECT_API_KEY_ID="$(jq -er .keyId <<< "${API_KEY_JSON}")"
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID="$(jq -er .issuerId <<< "${API_KEY_JSON}")"
+          export APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_KEY_ISSUER_ID
+          export APP_STORE_CONNECT_API_KEY_KEY="${API_KEY_CONTENT}"
+          unset API_KEY_JSON
+
+          bundle exec fastlane ios upload_metadata
+
+  android:
+    name: Google Play (${{ inputs.app }})
+    needs: resolve
+    if: needs.resolve.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.app }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    # Shares the Play edit lock with release uploads of the same app
+    concurrency:
+      group: release-android-${{ github.repository }}-${{ inputs.app }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          working-directory: apps/${{ inputs.app }}
+          bundler-cache: true
+
+      # The credentials file (external_account) is what fastlane supply uses
+      - name: Authenticate to Google Cloud via WIF
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - name: Upload texts and screenshots
+        working-directory: apps/${{ inputs.app }}/android
+        env:
+          SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
+        run: bundle exec fastlane android upload_metadata
