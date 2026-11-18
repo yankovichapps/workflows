@@ -1,9 +1,10 @@
 # Submits the iOS build of a release (`<app>@<version>`) for App Store review,
 # unless the release is a pre-release (then the build stays in TestFlight).
 #
-# Xcode Cloud builds the tag and uploads to TestFlight on its own. This
-# workflow runs on two events of the calling repository:
-# - repository_dispatch `ios-uploaded`: Xcode Cloud archived the tag
+# Xcode Cloud builds the release (branch release/<tag>, pushed by ios-build)
+# and uploads to TestFlight on its own. This workflow runs on two events of the
+# calling repository:
+# - repository_dispatch `ios-uploaded`: Xcode Cloud archived the release
 #   (templates/xcode-cloud/ci_post_xcodebuild.sh, payload tag + build_number)
 # - release `released`: published as a release, or "pre-release" unticked
 #   later. If Xcode Cloud has not uploaded a build of the version yet, there

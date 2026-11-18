@@ -9,7 +9,7 @@ on:
     branches: [main]
   release:
     types: [prereleased, released]
-  # Sent by Xcode Cloud after archiving a release tag (ci_post_xcodebuild.sh)
+  # Sent by Xcode Cloud after archiving a release (ci_post_xcodebuild.sh)
   repository_dispatch:
     types: [ios-uploaded]
   # Manual iOS submission, e.g. when the Xcode Cloud dispatch failed
@@ -43,8 +43,16 @@ jobs:
       id-token: write
     uses: yankovichapps/workflows/.github/workflows/release-android.yml@<sha> # v1
 
-  # Xcode Cloud uploads to TestFlight by itself; this submits for review when
-  # the release is not a pre-release (after the upload, or on unticking)
+  # Starts Xcode Cloud: pushes release/<tag>, which Xcode Cloud builds and
+  # uploads to TestFlight. A no-op when the branch exists (unticking later)
+  ios-build:
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    uses: yankovichapps/workflows/.github/workflows/ios-build.yml@<sha> # v1
+
+  # Submits for review when the release is not a pre-release (after the
+  # upload, or on unticking)
   ios:
     if: >-
       github.event_name == 'repository_dispatch' ||
