@@ -67,7 +67,10 @@ jobs:
           APP: ${{ steps.tag.outputs.app }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if [[ ! -d "apps/${APP}/ios" ]]; then
+          # The tag names the Nx project, whose folder may differ (pawpower-mobile in apps/mobile)
+          ROOT="$(node ../.release-tooling/scripts/release/app-root.mjs "${APP}")"
+          ROOT="${ROOT#root=}"
+          if [[ ! -d "${ROOT}/ios" ]]; then
             echo "${APP} has no iOS project, nothing to build." | tee -a "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi

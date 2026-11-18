@@ -48,11 +48,20 @@ jobs:
       ios: ${{ steps.resolve.outputs.ios }}
       android: ${{ steps.resolve.outputs.android }}
       ios-version: ${{ steps.resolve.outputs.ios-version }}
+      root: ${{ steps.resolve.outputs.root }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
+
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
           persist-credentials: false
 
       - name: Resolve platforms and version
@@ -62,7 +71,9 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
           IOS_VERSION: ${{ inputs.ios-version }}
         run: |
-          [[ "${APP}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -d "apps/${APP}" ]] || { echo "::error::Unknown app: ${APP}"; exit 1; }
+          # The app is the Nx project name; its folder may differ (pawpower-mobile in apps/mobile)
+          ROOT="$(node .release-tooling/scripts/release/app-root.mjs "${APP}")" || { echo "::error::Unknown app: ${APP}"; exit 1; }
+          ROOT="${ROOT#root=}"
           case "${PLATFORMS}" in
             both) IOS=true; ANDROID=true ;;
             ios) IOS=true; ANDROID=false ;;
@@ -83,6 +94,7 @@ jobs:
             echo "ios=${IOS}"
             echo "android=${ANDROID}"
             echo "ios-version=${IOS_VERSION}"
+            echo "root=${ROOT}"
           } >> "${GITHUB_OUTPUT}"
 
   ios:
@@ -105,7 +117,7 @@ jobs:
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: ${{ inputs.ruby-version }}
-          working-directory: apps/${{ inputs.app }}
+          working-directory: ${{ needs.resolve.outputs.root }}
           bundler-cache: true
 
       - name: Authenticate to Google Cloud via WIF
@@ -119,7 +131,7 @@ jobs:
       # The API key exists only inside this step's shell. The Fastfile's
       # before_all reads APP_STORE_CONNECT_API_KEY_* (key content as base64).
       - name: Upload texts and screenshots
-        working-directory: apps/${{ inputs.app }}/ios
+        working-directory: ${{ needs.resolve.outputs.root }}/ios
         env:
           APP_IDENTIFIER: ${{ vars.IOS_BUNDLE_ID }}
           DELIVER_APP_VERSION: ${{ needs.resolve.outputs.ios-version }}
@@ -163,7 +175,7 @@ jobs:
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: ${{ inputs.ruby-version }}
-          working-directory: apps/${{ inputs.app }}
+          working-directory: ${{ needs.resolve.outputs.root }}
           bundler-cache: true
 
       # The credentials file (external_account) is what fastlane supply uses
@@ -175,7 +187,7 @@ jobs:
           service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
 
       - name: Upload texts and screenshots
-        working-directory: apps/${{ inputs.app }}/android
+        working-directory: ${{ needs.resolve.outputs.root }}/android
         env:
           SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
         run: bundle exec fastlane android upload_metadata

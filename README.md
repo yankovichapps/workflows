@@ -27,6 +27,22 @@ repository. It contains no secrets and no project-specific values.
    and pin it to a release of this repository: `@<commit sha> # v1.0.0`. Dependabot's
    `github-actions` updates find the next release by that comment.
 
+### App name and folder
+
+The `<app>` in `<app>@<version>` is the app's **Nx project name**. The same name is used
+for the GitHub environment and the Xcode Cloud branch prefix `release/<app>@`. The folder
+can be named differently: the workflows and the Xcode Cloud scripts look up the
+`project.json` whose `"name"` is the app, without installing anything
+([`scripts/release/app-root.mjs`](scripts/release/app-root.mjs)).
+
+| `project.json`                                           | Tags                    | Folder used        |
+| -------------------------------------------------------- | ----------------------- | ------------------ |
+| `apps/keep-an-eye/project.json`, `"name": "keep-an-eye"` | `keep-an-eye@3.9.0`     | `apps/keep-an-eye` |
+| `apps/mobile/project.json`, `"name": "pawpower-mobile"`  | `pawpower-mobile@1.0.0` | `apps/mobile`      |
+| `apps/<app>/project.json` without `"name"`               | `<app>@1.0.0`           | `apps/<app>`       |
+
+Below, `apps/<app>` means the app's folder.
+
 ### What an app provides for `release-android`
 
 | Item                         | Convention                                                                                       |
