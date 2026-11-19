@@ -1,0 +1,160 @@
+# Starts the Xcode Cloud build of a release (`<app>@<version>`) by pushing the
+# branch `release/<app>@<version>` at the tag's commit, as the release bot.
+#
+# Why a branch, pushed by the release bot: Xcode Cloud did not start on tags
+# created by publishing a draft that github-actions[bot] made, nor on a branch
+# pushed with the workflow's GITHUB_TOKEN. It does start on refs pushed with
+# git by a person or by a GitHub App. So this job pushes the branch with a
+# token of the org's release bot App (yankovichapps-release-bot). The Xcode
+# Cloud workflow starts on *Branch Changes* with the prefix `release/<app>@`;
+# ci_post_clone.sh reads the version from the branch name.
+#
+# The bot's key never leaves Secret Manager in the shared GCP project: the job
+# authenticates through WIF as the `release-bot` service account (bound to the
+# calling repository's main branch and tags), reads the key, and mints an
+# installation token limited to the calling repository and Contents: write.
+#
+# Idempotent: pushing the branch again at the same commit (unticking
+# "pre-release" later, a re-run) changes nothing, so the tested build is not
+# rebuilt. The branches stay as a record of what Xcode Cloud built.
+#
+# The calling repository provides the repository variables
+# GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SHARED_PROJECT_ID,
+# GCP_RELEASE_BOT_SERVICE_ACCOUNT, SECRET_RELEASE_BOT_PRIVATE_KEY and
+# RELEASE_BOT_CLIENT_ID, and the release bot App is installed on it.
+name: iOS Build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag <app>@<version>. Default: the tag of the release event'
+        type: string
+        required: false
+        default: ''
+    outputs:
+      branch:
+        description: 'The pushed branch, empty when the app has no iOS project'
+        value: ${{ jobs.start.outputs.branch }}
+
+jobs:
+  start:
+    name: Start Xcode Cloud
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # WIF: impersonate the release-bot service account
+    outputs:
+      branch: ${{ steps.push.outputs.branch }}
+    steps:
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      - name: Parse tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="${INPUT_TAG:-${EVENT_TAG}}"
+          node .release-tooling/scripts/release/release-tag.mjs "${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      # Nothing from the repository is executed in this job
+      - name: Check out ${{ steps.tag.outputs.tag }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          path: repo
+          persist-credentials: false
+
+      - name: Find the iOS project
+        id: ios
+        working-directory: repo
+        env:
+          APP: ${{ steps.tag.outputs.app }}
+        run: |
+          # The tag names the Nx project, whose folder may differ (pawpower-mobile in apps/mobile)
+          ROOT="$(node ../.release-tooling/scripts/release/app-root.mjs "${APP}")"
+          ROOT="${ROOT#root=}"
+          if [[ -d "${ROOT}/ios" ]]; then
+            echo "found=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "${APP} has no iOS project, nothing to build." | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Check the release bot variables
+        if: steps.ios.outputs.found == 'true'
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SHARED_PROJECT_ID: ${{ vars.GCP_SHARED_PROJECT_ID }}
+          GCP_RELEASE_BOT_SERVICE_ACCOUNT: ${{ vars.GCP_RELEASE_BOT_SERVICE_ACCOUNT }}
+          SECRET_RELEASE_BOT_PRIVATE_KEY: ${{ vars.SECRET_RELEASE_BOT_PRIVATE_KEY }}
+          RELEASE_BOT_CLIENT_ID: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+        run: |
+          MISSING=()
+          for NAME in GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SHARED_PROJECT_ID \
+            GCP_RELEASE_BOT_SERVICE_ACCOUNT SECRET_RELEASE_BOT_PRIVATE_KEY RELEASE_BOT_CLIENT_ID; do
+            [[ -n "${!NAME}" ]] || MISSING+=("${NAME}")
+          done
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "::error::Missing repository variables: ${MISSING[*]} (set by the repository's infra repo)"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud as the release bot
+        if: steps.ios.outputs.found == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_BOT_SERVICE_ACCOUNT }}
+
+      - name: Read the release bot key
+        id: key
+        if: steps.ios.outputs.found == 'true'
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            private-key:${{ vars.GCP_SHARED_PROJECT_ID }}/${{ vars.SECRET_RELEASE_BOT_PRIVATE_KEY }}
+
+      # Limited to the calling repository; revoked when the job ends
+      - name: Mint a release bot token
+        id: bot
+        if: steps.ios.outputs.found == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ steps.key.outputs.private-key }}
+          permission-contents: write
+
+      - name: Push release/${{ steps.tag.outputs.tag }}
+        id: push
+        if: steps.ios.outputs.found == 'true'
+        working-directory: repo
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${BOT_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${AUTH_HEADER#AUTHORIZATION: basic }"
+          bot_git() { git -c "http.${SERVER_URL}/.extraheader=${AUTH_HEADER}" "$@"; }
+
+          BRANCH="release/${TAG}"
+          SHA="$(git rev-parse HEAD)"
+          REMOTE_SHA="$(bot_git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)"
+
+          if [[ "${REMOTE_SHA}" == "${SHA}" ]]; then
+            MESSAGE="${BRANCH} already points at ${SHA:0:7}: Xcode Cloud built it before, nothing to start."
+          else
+            bot_git push origin "${SHA}:refs/heads/${BRANCH}"
+            MESSAGE="Pushed ${BRANCH} at ${SHA:0:7} as the release bot: Xcode Cloud builds it and uploads to TestFlight."
+          fi
+          echo "### iOS ${TAG}: ${MESSAGE}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "branch=${BRANCH}" >> "${GITHUB_OUTPUT}"

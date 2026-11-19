@@ -14,6 +14,7 @@ repository. It contains no secrets and no project-specific values.
 | ----------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
 | [`release-draft.yml`](.github/workflows/release-draft.yml)        | ready   | One draft release per app, `<app>@<next version>`, from conventional commits |
 | [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Pre-release → build for Play internal; release → promote the tested internal release to production, or build for production |
+| [`ios-build.yml`](.github/workflows/ios-build.yml)                | ready   | Release published → the release bot pushes `release/<app>@<version>`, which starts Xcode Cloud |
 | [`ios-submit.yml`](.github/workflows/ios-submit.yml)              | ready   | Release (after the Xcode Cloud upload, or on unticking pre-release) → submit the build for review |
 | [`store-metadata.yml`](.github/workflows/store-metadata.yml)      | ready   | Manual: texts and screenshots to the App Store (into a version) and Google Play |
 
@@ -29,7 +30,7 @@ repository. It contains no secrets and no project-specific values.
 ### App name and folder
 
 The `<app>` in `<app>@<version>` is the app's **Nx project name**. The same name is used
-for the GitHub environment and the Xcode Cloud tag prefix `<app>@`. The folder
+for the GitHub environment and the Xcode Cloud branch prefix `release/<app>@`. The folder
 can be named differently: the workflows and the Xcode Cloud scripts look up the
 `project.json` whose `"name"` is the app, without installing anything
 ([`scripts/release/app-root.mjs`](scripts/release/app-root.mjs)).
@@ -75,19 +76,18 @@ the store whether a tested build of the version is already there.
 
 | Event                           | Android (`release-android`)                         | iOS (Xcode Cloud + `ios-submit`)                          |
 | ------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
-| publish as pre-release          | build → internal                                    | Xcode Cloud builds the tag → TestFlight; no submission |
-| publish as release              | no internal release of the version → build → production | Xcode Cloud builds the tag → TestFlight → dispatch → submit for review |
-| untick pre-release              | internal release of the version → production (same AAB) | the tag is unchanged, no rebuild; newest build of the version → submit for review |
+| publish as pre-release          | build → internal                                    | push `release/<tag>` → Xcode Cloud → TestFlight; no submission |
+| publish as release              | no internal release of the version → build → production | push `release/<tag>` → Xcode Cloud → TestFlight → dispatch → submit for review |
+| untick pre-release              | internal release of the version → production (same AAB) | branch exists, no rebuild; newest build of the version → submit for review |
 
-**Known issue: Xcode Cloud sometimes does not start on the tag.** Publishing a draft makes
-GitHub create the tag on the server. For `keep-an-eye@3.9.0` and `keep-an-eye@3.10.0` Xcode
-Cloud did not start; 3.9.0 started after the tag was pushed again with git by a person. A
-`release/<app>@<version>` branch pushed by the Release workflow (`ios-build`, v1.0.0–v1.1.0)
-did not start it either, so `ios-build` was removed. Both missed tags came from drafts created
-by `github-actions[bot]`, and publishing such a draft may create the tag without a `push`
-event ([community#16244](https://github.com/orgs/community/discussions/16244)); this is not
-confirmed yet. Until it is resolved, check after publishing that Xcode Cloud started, and
-otherwise start the build of the tag by hand.
+**Why a branch, pushed by the release bot:** Xcode Cloud did not start on tags created by
+publishing a draft that `github-actions[bot]` made (`keep-an-eye@3.9.0`, `3.10.0`, `3.11.0`),
+nor on a `release/<tag>` branch pushed with the workflow's `GITHUB_TOKEN` (v1.0.0–v1.1.0). It
+does start on refs pushed with git by a person or by a GitHub App. So `ios-build` pushes
+`release/<app>@<version>` with a token of the org's release bot App. The bot's key stays in
+Secret Manager in the shared GCP project; the job reads it through WIF as the `release-bot`
+service account and mints a token limited to the calling repository. The branches stay as a
+record of what Xcode Cloud built.
 
 ### What an app provides for `ios-submit` and Xcode Cloud
 
@@ -96,9 +96,10 @@ otherwise start the build of the tag by hand.
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `IOS_BUNDLE_ID`, `SECRET_APP_STORE_CONNECT_API_KEY` (JSON `{"keyId","issuerId","key":"<.p8 as base64>"}`) |
 | fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number`. **With** `build_number` (Xcode Cloud dispatch, sent before the TestFlight upload): wait until that build appears and is processed, with a timeout, then submit. **Without** (release event): submit the newest build of the version, or do nothing when there is none yet, since the dispatch will submit it. Do nothing when the version is already submitted: both events can arrive |
 | Info.plist                   | `CFBundleShortVersionString` `0.0.0`, `CFBundleVersion` `1` (in every target that has a version) |
-| Xcode Cloud workflow         | start condition _Tag Changes_, prefix `<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
+| Xcode Cloud workflow         | start condition _Branch Changes_, prefix `release/<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
+| Release bot (`ios-build`)    | `yankovichapps-release-bot` installed on the repository; repository variables `GCP_SHARED_PROJECT_ID`, `GCP_RELEASE_BOT_SERVICE_ACCOUNT`, `SECRET_RELEASE_BOT_PRIVATE_KEY`, `RELEASE_BOT_CLIENT_ID` and `GCP_WORKLOAD_IDENTITY_PROVIDER` (managed by `<repo>-infra`, values from org-infra) |
 | Manual submission            | the caller's `workflow_dispatch` (tag, optional build number), e.g. when the dispatch failed |
-| `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the release tag and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
+| `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the release branch (or tag) and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
 
 ### Store texts and screenshots (`store-metadata`)
 

@@ -54,6 +54,15 @@ jobs:
       id-token: write
     uses: yankovichapps/workflows/.github/workflows/release-android.yml@<sha> # v1
 
+  # Starts Xcode Cloud: pushes release/<tag>, which Xcode Cloud builds and
+  # uploads to TestFlight. A no-op when the branch exists (unticking later)
+  ios-build:
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+      id-token: write # WIF: the release bot pushes the branch
+    uses: yankovichapps/workflows/.github/workflows/ios-build.yml@<sha> # v1
+
   # Submits for review when the release is not a pre-release (after the
   # upload, or on unticking)
   ios:

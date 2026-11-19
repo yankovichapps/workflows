@@ -4,10 +4,12 @@
 # Copy to <app folder>/ios/ci_scripts/ci_post_clone.sh (executable), e.g.
 # apps/<app>/ios/ci_scripts/.
 #
-# 1. Release version: when Xcode Cloud builds a release tag `<app>@<version>`,
-#    writes <version> into every Info.plist of the app whose
-#    CFBundleShortVersionString is the placeholder 0.0.0. Any other start
-#    (branch, pull request) keeps 0.0.0. The build number is Xcode Cloud's.
+# 1. Release version: when Xcode Cloud builds a release, writes <version> into
+#    every Info.plist of the app whose CFBundleShortVersionString is the
+#    placeholder 0.0.0. A release build is the branch `release/<app>@<version>`
+#    (pushed by the shared ios-build workflow) or the tag `<app>@<version>`.
+#    Any other start (other branches, pull requests) keeps 0.0.0. The build
+#    number is Xcode Cloud's.
 # 2. Toolchain for a React Native app: node + pnpm workspace, the optional
 #    Nx target `<app>:release-prepare`, CocoaPods from the app's Gemfile.
 # ==============================================================================
@@ -23,10 +25,15 @@ APP_PATH="$(dirname "${APP_IOS_PATH}")"
 APP_NAME="$(plutil -extract name raw -o - "${APP_PATH}/project.json" 2>/dev/null || basename "${APP_PATH}")"
 
 # --- 1. Release version -------------------------------------------------------
-if [ -n "${CI_TAG:-}" ]; then
-  VERSION="${CI_TAG#"${APP_NAME}"@}"
-  if [ "${VERSION}" = "${CI_TAG}" ] || ! echo "${VERSION}" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-    echo "error: ${CI_TAG} is not a release tag of ${APP_NAME} (${APP_NAME}@<major>.<minor>.<patch>)"
+RELEASE_TAG="${CI_TAG:-}"
+case "${CI_BRANCH:-}" in
+  release/*) RELEASE_TAG="${CI_BRANCH#release/}" ;;
+esac
+
+if [ -n "${RELEASE_TAG}" ]; then
+  VERSION="${RELEASE_TAG#"${APP_NAME}"@}"
+  if [ "${VERSION}" = "${RELEASE_TAG}" ] || ! echo "${VERSION}" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+    echo "error: ${RELEASE_TAG} is not a release of ${APP_NAME} (${APP_NAME}@<major>.<minor>.<patch>)"
     exit 1
   fi
 
@@ -48,7 +55,7 @@ if [ -n "${CI_TAG:-}" ]; then
     exit 1
   fi
 else
-  echo "Not a tag build: the version stays 0.0.0."
+  echo "Not a release build: the version stays 0.0.0."
 fi
 
 # --- 2. Toolchain -------------------------------------------------------------
