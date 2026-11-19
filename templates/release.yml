@@ -42,7 +42,8 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
     permissions:
-      contents: write
+      contents: read
+      id-token: write # WIF: the release bot writes the drafts
     uses: yankovichapps/workflows/.github/workflows/release-draft.yml@<sha> # v1
 
   # pre-release → Play internal; release → promote the tested internal
