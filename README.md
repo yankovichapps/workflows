@@ -79,15 +79,12 @@ the store whether a tested build of the version is already there.
 | publish as release              | no internal release of the version → build → production | Xcode Cloud builds the tag → TestFlight → dispatch → submit for review |
 | untick pre-release              | internal release of the version → production (same AAB) | the tag is unchanged, no rebuild; newest build of the version → submit for review |
 
-**Known issue: Xcode Cloud sometimes does not start on the tag.** Publishing a draft makes
-GitHub create the tag on the server. Xcode Cloud did not start on `keep-an-eye@3.9.0`,
-`3.10.0` and `3.11.0`, all from drafts created by `github-actions[bot]`, nor on a
-`release/<app>@<version>` branch pushed with `GITHUB_TOKEN` (`ios-build`, v1.0.0–v1.1.0). It
-did start on refs pushed with git by a person or by a GitHub App. Since v3.0.0 the drafts are
-written by the org's release bot App; whether Xcode Cloud then starts on the published tag is
-being verified with the next release. Until then, check after publishing that Xcode Cloud
-started, and otherwise start the build of the tag by hand. The fallback, if it still does not
-start: the release bot pushes a `release/<app>@<version>` branch (workflows#8).
+**Why the release bot writes the drafts:** publishing a draft makes GitHub create the tag on
+the server. Xcode Cloud did not start on tags from drafts created by `github-actions[bot]`
+(`keep-an-eye@3.9.0`, `3.11.0`), nor on a `release/<app>@<version>` branch pushed with
+`GITHUB_TOKEN` (`ios-build`, v1.0.0–v1.1.0). Since v3.0.0 `release-draft` writes the drafts as
+the org's release bot App, and Xcode Cloud starts on the published tag by itself
+(`keep-an-eye@3.11.1`).
 
 ### What an app provides for `ios-submit` and Xcode Cloud
 
