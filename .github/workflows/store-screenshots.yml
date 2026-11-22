@@ -108,9 +108,8 @@ jobs:
     permissions:
       contents: read
       id-token: write # Workload Identity Federation
-    # Shares the App Store version with ios-submit, which uploads the texts
     concurrency:
-      group: ios-submit-${{ github.repository }}-${{ inputs.app }}
+      group: store-screenshots-ios-${{ github.repository }}-${{ inputs.app }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

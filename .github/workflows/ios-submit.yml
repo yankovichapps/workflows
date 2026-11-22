@@ -118,8 +118,7 @@ jobs:
     permissions:
       contents: read
       id-token: write # Workload Identity Federation
-    # The dispatch and the release event can arrive close together, and
-    # store-screenshots writes the same App Store version: one at a time
+    # The dispatch and the release event can arrive close together: one at a time
     concurrency:
       group: ios-submit-${{ github.repository }}-${{ needs.resolve.outputs.app }}
       cancel-in-progress: false
