@@ -1,19 +1,21 @@
-# Uploads an app's store texts and screenshots from the repository, without a
-# build: fastlane `upload_metadata` lanes in apps/<app>/ios and apps/<app>/android.
-# Never part of a release; run it by hand whenever the listings change.
+# Uploads an app's store screenshots from the repository, without a build:
+# fastlane `upload_screenshots` lanes in apps/<app>/ios and apps/<app>/android.
+# Never part of a release; run it by hand whenever the screenshots change.
+# Store texts are not uploaded here: every release uploads them from its tag
+# (release-android, ios-submit).
 #
 # - iOS: into the App Store version `ios-version` (default: the version of the
 #   app's newest release tag). deliver creates the version if it does not exist
 #   yet. Screenshots can only change while the version is not in review, so
 #   upload them before a release is submitted.
-# - Android: the Google Play listing, which applies to every track at once.
+# - Android: the Google Play listing images, which apply to every track at once.
 #
 # The calling repository provides, per app:
 # - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
 #   IOS_BUNDLE_ID, SECRET_APP_STORE_CONNECT_API_KEY, and the repository variable
 #   GCP_WORKLOAD_IDENTITY_PROVIDER
-# - fastlane lanes `ios upload_metadata` and `android upload_metadata`
-name: Store metadata
+# - fastlane lanes `ios upload_screenshots` and `android upload_screenshots`
+name: Store screenshots
 
 on:
   workflow_call:
@@ -106,8 +108,9 @@ jobs:
     permissions:
       contents: read
       id-token: write # Workload Identity Federation
+    # Shares the App Store version with ios-submit, which uploads the texts
     concurrency:
-      group: store-metadata-ios-${{ github.repository }}-${{ inputs.app }}
+      group: ios-submit-${{ github.repository }}-${{ inputs.app }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,7 +133,7 @@ jobs:
 
       # The API key exists only inside this step's shell. The Fastfile's
       # before_all reads APP_STORE_CONNECT_API_KEY_* (key content as base64).
-      - name: Upload texts and screenshots
+      - name: Upload screenshots
         working-directory: ${{ needs.resolve.outputs.root }}/ios
         env:
           APP_IDENTIFIER: ${{ vars.IOS_BUNDLE_ID }}
@@ -152,7 +155,7 @@ jobs:
           export APP_STORE_CONNECT_API_KEY_KEY="${API_KEY_CONTENT}"
           unset API_KEY_JSON
 
-          bundle exec fastlane ios upload_metadata
+          bundle exec fastlane ios upload_screenshots
 
   android:
     name: Google Play (${{ inputs.app }})
@@ -186,8 +189,8 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
 
-      - name: Upload texts and screenshots
+      - name: Upload screenshots
         working-directory: ${{ needs.resolve.outputs.root }}/android
         env:
           SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
-        run: bundle exec fastlane android upload_metadata
+        run: bundle exec fastlane android upload_screenshots

@@ -13,9 +13,9 @@ repository. It contains no secrets and no project-specific values.
 | Workflow                                                          | Status  | What it does                                                                  |
 | ----------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
 | [`release-draft.yml`](.github/workflows/release-draft.yml)        | ready   | One draft release per app, `<app>@<next version>`, from conventional commits, written by the release bot |
-| [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Pre-release → build for Play internal; release → promote the tested internal release to production, or build for production |
-| [`ios-submit.yml`](.github/workflows/ios-submit.yml)              | ready   | Release (after the Xcode Cloud upload, or on unticking pre-release) → submit the build for review |
-| [`store-metadata.yml`](.github/workflows/store-metadata.yml)      | ready   | Manual: texts and screenshots to the App Store (into a version) and Google Play |
+| [`release-android.yml`](.github/workflows/release-android.yml)    | ready   | Pre-release → build for Play internal; release → promote the tested internal release to production, or build for production; store texts from the tag either way |
+| [`ios-submit.yml`](.github/workflows/ios-submit.yml)              | ready   | Release (after the Xcode Cloud upload, or on unticking pre-release) → submit the build for review with the store texts of the tag; pre-release → only the store texts, into the App Store version |
+| [`store-screenshots.yml`](.github/workflows/store-screenshots.yml) | ready   | Manual: screenshots to the App Store (into a version) and Google Play           |
 
 ## Using it in a repository
 
@@ -48,7 +48,7 @@ Below, `apps/<app>` means the app's folder.
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `ANDROID_PACKAGE`, `SECRET_ANDROID_UPLOAD_KEYSTORE` (managed by `<repo>-infra`); repository variable `GCP_WORKLOAD_IDENTITY_PROVIDER` |
 | Keystore secret              | JSON `{"keystore":"<base64>","storePassword","keyAlias","keyPassword"}` in Secret Manager           |
-| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it (the workflow sets `SUPPLY_VERSION_NAME` to the version, which names the Play release, so promotion can find it) |
+| fastlane                     | `apps/<app>/android`: lane `upload` with option `track`, building the release bundle and uploading it with the listing texts and release notes, without images (the workflow sets `SUPPLY_VERSION_NAME` to the version, which names the Play release, so promotion can find it); lane `upload_texts`, uploading only the listing texts (no bundle, release notes or images), run after a promotion |
 | Gradle (`android/app/build.gradle`) | `versionCode`/`versionName` from the project properties of the same name (placeholders `1` / `0.0.0`); release signing from `ANDROID_UPLOAD_STORE_FILE`, `ANDROID_UPLOAD_STORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS`, `ANDROID_UPLOAD_KEY_PASSWORD` |
 | Nx target `release-prepare`  | optional: generates gitignored sources the build needs; called with `--platform=android`           |
 
@@ -79,6 +79,19 @@ the store whether a tested build of the version is already there.
 | publish as release              | no internal release of the version → build → production | Xcode Cloud builds the tag → TestFlight → dispatch → submit for review |
 | untick pre-release              | internal release of the version → production (same AAB) | the tag is unchanged, no rebuild; newest build of the version → submit for review |
 
+**Store texts come from the tag, on every path.** Titles, subtitles, descriptions, keywords and
+release notes live in the app's `fastlane/metadata` and are uploaded by the release itself, so a
+release always shows the texts committed at its tag:
+
+| Event                  | Google Play                                                        | App Store                                                        |
+| ---------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| publish as pre-release | `upload`: texts + release notes with the internal build            | `upload_texts`: texts into the App Store version, not submitted  |
+| publish as release     | `upload` (build) or `upload_texts` (after a promotion)             | `submit`: texts, then submit for review                          |
+| untick pre-release     | `upload_texts` after the promotion; release notes stay the internal release's | `submit`: texts, then submit for review              |
+
+The Google Play listing applies to every track, so texts uploaded with a pre-release are public
+from then on. Screenshots are never part of a release: see `store-screenshots` below.
+
 **Why the release bot writes the drafts:** publishing a draft makes GitHub create the tag on
 the server. Xcode Cloud did not start on tags from drafts created by `github-actions[bot]`
 (`keep-an-eye@3.9.0`, `3.11.0`), nor on a `release/<app>@<version>` branch pushed with
@@ -91,16 +104,17 @@ the org's release bot App, and Xcode Cloud starts on the published tag by itself
 | Item                         | Convention                                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | GitHub environment `<app>`   | `GCP_PROJECT_ID`, `GCP_RELEASE_SERVICE_ACCOUNT`, `IOS_BUNDLE_ID`, `SECRET_APP_STORE_CONNECT_API_KEY` (JSON `{"keyId","issuerId","key":"<.p8 as base64>"}`) |
-| fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number`. **With** `build_number` (Xcode Cloud dispatch, sent before the TestFlight upload): wait until that build appears and is processed, with a timeout, then submit. **Without** (release event): submit the newest build of the version, or do nothing when there is none yet, since the dispatch will submit it. Do nothing when the version is already submitted: both events can arrive |
+| fastlane                     | `apps/<app>/ios`: lane `submit` with options `version` and optional `build_number`, uploading the store texts and submitting. **With** `build_number` (Xcode Cloud dispatch, sent before the TestFlight upload): wait until that build appears and is processed, with a timeout, then submit. **Without** (release event): submit the newest build of the version, or do nothing when there is none yet, since the dispatch will submit it. Do nothing when the version is already submitted: both events can arrive. Lane `upload_texts` with option `version`, for pre-releases: only the store texts into that App Store version (created if needed), no screenshots, no submission; do nothing when the version is already submitted |
 | Info.plist                   | `CFBundleShortVersionString` `0.0.0`, `CFBundleVersion` `1` (in every target that has a version) |
 | Xcode Cloud workflow         | start condition _Tag Changes_, prefix `<app>@`; archive + TestFlight distribution; variable `GITHUB_REPOSITORY`, secret `GITHUB_DISPATCH_TOKEN` (fine-grained, Contents: read & write on the repository) |
 | Release bot (`release-draft`) | `yankovichapps-release-bot` installed on the repository; repository variables `GCP_SHARED_PROJECT_ID`, `GCP_RELEASE_BOT_SERVICE_ACCOUNT`, `SECRET_RELEASE_BOT_PRIVATE_KEY`, `RELEASE_BOT_CLIENT_ID` and `GCP_WORKLOAD_IDENTITY_PROVIDER` (managed by `<repo>-infra`, values from org-infra) |
 | Manual submission            | the caller's `workflow_dispatch` (tag, optional build number), e.g. when the dispatch failed |
 | `ios/ci_scripts/`            | copy [`templates/xcode-cloud/`](templates/xcode-cloud/): `ci_post_clone.sh` writes the version from the release tag and installs the toolchain; `ci_post_xcodebuild.sh` sends `ios-uploaded` |
 
-### Store texts and screenshots (`store-metadata`)
+### Store screenshots (`store-screenshots`)
 
-Never part of a release. A caller with `workflow_dispatch` runs it by hand:
+Never part of a release; store texts are uploaded by the releases (see above). A caller with
+`workflow_dispatch` runs it by hand:
 
 ```yaml
 on:
@@ -110,17 +124,19 @@ on:
       platforms: { type: choice, options: [both, ios, android], default: both }
       ios-version: { description: 'App Store version (empty: newest release tag)', required: false }
 jobs:
-  metadata:
+  screenshots:
     permissions: { contents: read, id-token: write }
-    uses: yankovichapps/workflows/.github/workflows/store-metadata.yml@<sha> # v1
+    uses: yankovichapps/workflows/.github/workflows/store-screenshots.yml@<sha> # v4.0.0
     with:
       app: ${{ inputs.app }}
       platforms: ${{ inputs.platforms }}
       ios-version: ${{ inputs.ios-version }}
 ```
 
-It runs the lanes `ios upload_metadata` (into the App Store version, created if needed; only
-possible before the version is submitted for review) and `android upload_metadata`.
+It runs the lanes `ios upload_screenshots` (into the App Store version, created if needed; only
+possible before the version is submitted for review, so run it before releasing) and
+`android upload_screenshots` (screenshots and the other listing images; no texts or release
+notes, which belong to a build).
 
 ### How the next version is computed
 

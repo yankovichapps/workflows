@@ -7,12 +7,18 @@
 #   to production as it is, without rebuilding. Otherwise the app is built.
 # - build: versionName is the version from the tag; versionCode is the highest
 #   version code Google Play has accepted, plus one
+# - store texts: every path uploads the listing texts from the tag. A build
+#   uploads them with the bundle and its release notes; a promotion keeps the
+#   internal release's notes and uploads the texts after promoting.
 #
 # The calling repository provides, per app (see README):
 # - GitHub environment `<app>` with GCP_PROJECT_ID, GCP_RELEASE_SERVICE_ACCOUNT,
 #   ANDROID_PACKAGE, SECRET_ANDROID_UPLOAD_KEYSTORE, and the repository variable
 #   GCP_WORKLOAD_IDENTITY_PROVIDER
-# - fastlane lane `android upload track:<track>` in apps/<app>/android
+# - fastlane lanes in apps/<app>/android:
+#   - `upload track:<track>`: build the bundle and upload it with the listing
+#     texts and release notes (no images)
+#   - `upload_texts`: only the listing texts (no bundle, release notes or images)
 # - Gradle: versionCode/versionName from the `versionCode`/`versionName` project
 #   properties, release signing from the ANDROID_UPLOAD_* project properties
 # - optional Nx target `<app>:release-prepare` (generated, gitignored sources)
@@ -151,6 +157,77 @@ jobs:
             *) MESSAGE="No internal release of ${TAG}: building it for production." ;;
           esac
           echo "### Android ${TAG}: ${MESSAGE}" >> "${GITHUB_STEP_SUMMARY}"
+
+  # A promotion does not rebuild, so the listing texts of the tag are uploaded
+  # here; also when production already had the release, to undo console edits
+  texts:
+    name: Store texts (${{ needs.resolve.outputs.tag }})
+    needs: [resolve, promote]
+    if: needs.promote.outputs.action == 'promote' || needs.promote.outputs.action == 'done'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.app }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    concurrency:
+      group: release-android-${{ github.repository }}-${{ needs.resolve.outputs.app }}
+      cancel-in-progress: false
+    env:
+      APP: ${{ needs.resolve.outputs.app }}
+    steps:
+      - name: Check out ${{ needs.resolve.outputs.tag }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check out release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+
+      # The tag names the Nx project, whose folder may differ (pawpower-mobile in apps/mobile)
+      - name: Locate ${{ needs.resolve.outputs.app }}
+        id: app
+        run: |
+          ROOT="$(node .release-tooling/scripts/release/app-root.mjs "${APP}")"
+          ROOT="${ROOT#root=}"
+          if [[ ! -d "${ROOT}/android" ]]; then
+            echo "::error::${ROOT}/android not found: ${APP} is not an Android app"
+            exit 1
+          fi
+          echo "root=${ROOT}" >> "${GITHUB_OUTPUT}"
+
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          working-directory: ${{ steps.app.outputs.root }}
+          bundler-cache: true
+
+      # After the gem install, which keeps the credentials away from install
+      # scripts. The credentials file (external_account) is what supply uses.
+      - name: Authenticate to Google Cloud via WIF
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - name: Upload store texts
+        working-directory: ${{ steps.app.outputs.root }}/android
+        env:
+          SUPPLY_JSON_KEY: ${{ steps.gcp-auth.outputs.credentials_file_path }}
+        run: bundle exec fastlane android upload_texts
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          OUTCOME: ${{ job.status }}
+        run: echo "### Android ${TAG}: store texts from the tag, ${OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
 
   android:
     name: Android (${{ needs.resolve.outputs.tag }} → ${{ needs.resolve.outputs.track }})
