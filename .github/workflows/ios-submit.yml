@@ -1,5 +1,7 @@
-# Submits the iOS build of a release (`<app>@<version>`) for App Store review,
-# unless the release is a pre-release (then the build stays in TestFlight).
+# Submits the iOS build of a release (`<app>@<version>`) for App Store review.
+# For a pre-release the build stays in TestFlight, and only the store texts of
+# the tag go into the App Store version (created if needed), without
+# submitting. Either way the texts come from the tag.
 #
 # Xcode Cloud builds the release tag (start condition Tag Changes `<app>@`)
 # and uploads to TestFlight on its own. This workflow runs on two events of the
@@ -21,6 +23,9 @@
 #   - without build_number (release event): submit the newest build of the
 #     version; if there is none yet, do nothing (the dispatch will submit it)
 #   - either way, do nothing when the version is already submitted
+# - fastlane lane `ios upload_texts version:<v>`: upload only the store texts
+#   into that App Store version, no build, no screenshots, no submission; do
+#   nothing when the version is already submitted
 name: iOS Submit
 
 on:
@@ -99,16 +104,15 @@ jobs:
             exit 1
           fi
           if [[ "${PRERELEASE}" == "true" ]]; then
-            echo "${TAG} is a pre-release: the build stays in TestFlight." | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "${TAG} is a pre-release: the build stays in TestFlight, the store texts go into the App Store version." | tee -a "${GITHUB_STEP_SUMMARY}"
             echo "submit=false" >> "${GITHUB_OUTPUT}"
           else
             echo "submit=true" >> "${GITHUB_OUTPUT}"
           fi
 
   submit:
-    name: Submit ${{ needs.resolve.outputs.tag }} for review
+    name: ${{ needs.resolve.outputs.submit == 'true' && format('Submit {0} for review', needs.resolve.outputs.tag) || format('Store texts of {0} (pre-release)', needs.resolve.outputs.tag) }}
     needs: resolve
-    if: needs.resolve.outputs.submit == 'true'
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve.outputs.app }}
     permissions:
@@ -122,6 +126,7 @@ jobs:
       APP: ${{ needs.resolve.outputs.app }}
       VERSION: ${{ needs.resolve.outputs.version }}
       BUILD_NUMBER: ${{ needs.resolve.outputs.build-number }}
+      SUBMIT: ${{ needs.resolve.outputs.submit }}
     steps:
       - name: Check out ${{ needs.resolve.outputs.tag }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -165,7 +170,7 @@ jobs:
 
       # The API key exists only inside this step's shell. The Fastfile's
       # before_all reads APP_STORE_CONNECT_API_KEY_* (key content as base64).
-      - name: Wait for processing & submit for review
+      - name: ${{ needs.resolve.outputs.submit == 'true' && 'Wait for processing & submit for review' || 'Upload store texts' }}
         working-directory: ${{ steps.app.outputs.root }}/ios
         env:
           APP_IDENTIFIER: ${{ vars.IOS_BUNDLE_ID }}
@@ -186,6 +191,11 @@ jobs:
           export APP_STORE_CONNECT_API_KEY_KEY="${API_KEY_CONTENT}"
           unset API_KEY_JSON
 
+          if [[ "${SUBMIT}" != "true" ]]; then
+            bundle exec fastlane ios upload_texts "version:${VERSION}"
+            exit 0
+          fi
+
           ARGS=("version:${VERSION}")
           if [[ -n "${BUILD_NUMBER}" ]]; then
             ARGS+=("build_number:${BUILD_NUMBER}")
@@ -200,7 +210,11 @@ jobs:
           {
             echo "### iOS ${APP} ${VERSION}"
             echo ""
-            echo "| Build | Result |"
-            echo "| --- | --- |"
-            echo "| ${BUILD_NUMBER:-newest of ${VERSION}} | ${OUTCOME} |"
+            echo "| Action | Build | Result |"
+            echo "| --- | --- | --- |"
+            if [[ "${SUBMIT}" == "true" ]]; then
+              echo "| submit for review | ${BUILD_NUMBER:-newest of ${VERSION}} | ${OUTCOME} |"
+            else
+              echo "| store texts (pre-release) | n/a | ${OUTCOME} |"
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
