@@ -227,7 +227,8 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
           OUTCOME: ${{ job.status }}
-        run: echo "### Android ${TAG}: store texts from the tag, ${OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
+        run: |
+          echo "### Android ${TAG}: store texts from the tag, ${OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
 
   android:
     name: Android (${{ needs.resolve.outputs.tag }} → ${{ needs.resolve.outputs.track }})
